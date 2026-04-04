@@ -1,0 +1,53 @@
+local mod = get_mod("SocialNotifications")
+
+return {
+	name = mod:localize("mod_title"),
+	description = mod:localize("mod_description"),
+	is_togglable = true,
+	options = {
+		widgets = {
+			{
+				setting_id  = "notify_online",
+				type        = "checkbox",
+				default_value = true,
+			},
+			{
+				setting_id  = "notify_offline",
+				type        = "checkbox",
+				default_value = true,
+			},
+			{
+				setting_id  = "notify_mission_start",
+				type        = "checkbox",
+				default_value = true,
+			},
+			{
+				setting_id  = "notify_mission_end",
+				type        = "checkbox",
+				default_value = false,
+			},
+			{
+				setting_id  = "notify_matchmaking",
+				type        = "checkbox",
+				default_value = true,
+			},
+			{
+				setting_id  = "notify_hub",
+				type        = "checkbox",
+				default_value = false,
+			},
+			{
+				setting_id    = "poll_interval",
+				type          = "numeric",
+				default_value = 10,
+				range         = { 5, 60 },
+			},
+			{
+				setting_id    = "notification_duration",
+				type          = "numeric",
+				default_value = 6,
+				range         = { 2, 20 },
+			},
+		},
+	},
+}
