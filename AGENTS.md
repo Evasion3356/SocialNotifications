@@ -10,14 +10,15 @@ Context file for AI coding agents. Read this before making any changes.
 
 ```
 SocialNotifications/
-├── AGENTS.md                          ← this file
-├── CLAUDE.md                          ← Claude Code project instructions
-├── GOAL.md                            ← design goals and planned work
-├── SocialNotifications.mod            ← DMF entry point (loaded by the game)
-├── Darktide-Source-Code/              ← game source reference — READ ONLY, never modify
+├── AGENTS.md                              ← this file
+├── CLAUDE.md                              ← points to AGENTS.md
+├── GOAL.md                                ← design goals, API details, open work
+├── SocialNotifications.mod                ← DMF entry point (loaded by the game)
+├── Darktide-Source-Code/                  ← game source reference — READ ONLY, never modify
 └── scripts/mods/SocialNotifications/
-    ├── SocialNotifications.lua        ← main mod logic
-    ├── SocialNotifications_data.lua   ← DMF mod metadata + settings widgets
+    ├── SocialNotifications.lua            ← main mod (poll loop, event handler, reset)
+    ├── SocialNotifications_autoinvite.lua ← auto-invite loop + social popup hook
+    ├── SocialNotifications_data.lua       ← DMF mod metadata + settings widgets
     └── SocialNotifications_localization.lua
 ```
 
@@ -112,6 +113,15 @@ Relevant events:
 | `backend_friend_removed` | Friend removed |
 | `party_immaterium_other_members_updated` | Party composition changed |
 
+## Key game APIs (quick reference)
+
+### Social popup hook
+`ViewElementPlayerSocialPopupContentList.from_player_info(parent, player_info)` — module-level function; returns `(items_table, count)`. `items_table` is a shared reused table; valid entries are `[1..count]`. Hook with `mod:hook(ContentList, "from_player_info", function(original, parent, player_info) ... end)`. Append items by incrementing `count` and writing to `items[count]` (clear if exists). Each item needs `blueprint`, `label`, `callback`.
+
+### Party invite
+`Managers.data_service.social:send_party_invite(player_info)` — high-level invite; handles Fatshark + platform flows.
+`Managers.data_service.social:can_invite_to_party(player_info)` → `(bool, reason?)` — checks offline, party full, cross-play, activity restrictions.
+
 ## Current implementation summary
 
 `SocialNotifications.lua` uses a two-layer approach:
@@ -132,11 +142,22 @@ Relevant events:
 
 **State reset** — `reset_state()` clears `_friend_states` and re-runs the seed poll on `on_all_mods_loaded` and when entering `GameplayStateRun` / `StateMainMenu`, preventing stale transitions from firing spurious notifications across map loads.
 
+### Auto-invite (`SocialNotifications_autoinvite.lua`)
+Loaded via `mod:io_dofile(...)` at the top of `SocialNotifications.lua`. Two responsibilities:
+
+**Loop** — `AutoInvite.update(dt)` runs every `auto_invite_interval` seconds. For each `_watched[account_id]`: if `PartyStatus.mine` → remove (accepted); if offline / `platform_online` / `activity == "mission"` / `invite_pending` → skip; otherwise call `can_invite_to_party` and `send_party_invite` if allowed.
+
+**Hook** — `mod:hook(ContentList, "from_player_info", ...)` appends a divider + `[ON]/[OFF] Auto-invite to Strike Team` button to the social popup. Toggling calls `toggle_watch(account_id)`. The watched list is preserved across map transitions (user intent). `AutoInvite.reset_timer()` resets only the interval timer.
+
+**skip_platform_friends does NOT affect auto-invite** — the user explicitly set the checkbox, so platform friendship is irrelevant.
+
 ## Planned work (see GOAL.md for detail)
 
-1. **Party/invite events** — hook `backend_friend_invite` and `party_immaterium_other_members_updated`.
-2. **Per-friend muting** — UI to suppress notifications for specific friends.
-3. **Sound** — pass a custom `sound_event` to `event_add_notification_message` for a distinct audio cue.
+1. **Roster-level checkbox** — visual checkbox in the friend roster row itself, not just the popup. Requires blueprint injection into `player_plaque` widget passes.
+2. **Popup refresh after toggle** — re-trigger `set_player_info` so the label updates immediately without close/reopen.
+3. **Cross-session persistence** — persist `_watched` via DMF save data.
+4. **Party/invite events** — notification when auto-invite is accepted.
+5. **Per-friend notification muting** — suppress presence notifications for specific friends.
 
 ## Coding guidelines
 

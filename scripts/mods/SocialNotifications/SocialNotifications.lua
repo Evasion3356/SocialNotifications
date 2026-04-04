@@ -3,6 +3,8 @@ local mod = get_mod("SocialNotifications")
 local SocialConstants = mod:original_require("scripts/managers/data_service/services/social/social_constants")
 local FriendStatus    = SocialConstants.FriendStatus
 
+local autoinvite = mod:io_dofile("SocialNotifications/scripts/mods/SocialNotifications/SocialNotifications_autoinvite")
+
 -- ============================================================
 -- Constants
 -- ============================================================
@@ -165,6 +167,7 @@ end
 local function reset_state()
 	_friend_states = {}
 	_poll_timer    = 0
+	autoinvite.reset_timer()
 	poll_friends()  -- seeds _friend_states without notifying
 end
 
@@ -190,4 +193,6 @@ mod.update = function(dt)
 		_poll_timer = 0
 		poll_friends()
 	end
+
+	autoinvite.update(dt)
 end

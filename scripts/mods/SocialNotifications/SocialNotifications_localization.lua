@@ -28,8 +28,19 @@ return {
 	skip_platform_friends = {
 		en = "Skip platform friends (Steam/Xbox/PSN)",
 	},
+	auto_invite_interval = {
+		en = "Auto-invite check interval (seconds)",
+	},
 	poll_interval = {
 		en = "Poll interval (seconds)",
+	},
+
+	-- Auto-invite popup toggle labels
+	auto_invite_on = {
+		en = "[ON]  Auto-invite to Strike Team",
+	},
+	auto_invite_off = {
+		en = "[OFF] Auto-invite to Strike Team",
 	},
 
 	-- Notification body text (name is shown as header / line 1)

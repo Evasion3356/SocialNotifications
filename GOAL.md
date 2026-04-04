@@ -1,77 +1,116 @@
 # SocialNotifications — Project Goal
 
 ## Purpose
-Show HUD notifications when Steam/platform friends change status inside Darktide: coming online, going offline, entering a mission, starting matchmaking, or returning to the Mourningstar hub.
+Two related features for Darktide social:
+
+1. **Presence notifications** — HUD notifications when Darktide social friends change status (online, offline, entering a mission, starting matchmaking, returning to the Mourningstar hub).
+2. **Auto-invite to Strike Team** — Per-friend checkbox in the social popup menu that, when checked, automatically sends party invites on a configurable interval whenever the friend is available (not offline, not in a mission).
 
 ## Codebase layout
 - `SocialNotifications/` — this mod (DMF mod, loaded via `SocialNotifications.mod`)
-- `../dmf/` — Darktide Mod Framework (one directory up from this mod). Provides `new_mod`, `get_mod`, hook APIs, `mod:notify()`, etc.
-- `Darktide-Source-Code/` — game source for reference; **do not modify**.
+- `../dmf/` — Darktide Mod Framework (one directory up). Provides `new_mod`, `get_mod`, hook APIs, `mod:notify()`, etc.
+- `Darktide-Source-Code/` — game source reference; **do not modify**.
 
 ## Key game APIs
 
-### Social service
-`Managers.data_service.social` is a `SocialService` instance.
-
+### Social service — `Managers.data_service.social`
 | Method | Returns | Notes |
 |--------|---------|-------|
-| `fetch_friends(force?)` | `Promise<PlayerInfo[]>` | Returns all friends (platform + Fatshark). Resolves quickly from cache; dirty flag causes re-fetch. |
-| `get_player_info_by_account_id(id)` | `PlayerInfo?` | Lookup by Fatshark account ID. |
+| `fetch_friends(force?)` | `Promise<PlayerInfo[]>` | Returns all friends (platform + Fatshark). Cached; dirty flag causes re-fetch. |
+| `get_player_info_by_account_id(id)` | `PlayerInfo?` | Synchronous lookup by Fatshark account ID. |
+| `send_party_invite(player_info)` | void | Sends a party invite; handles Fatshark + platform-specific flows internally. |
+| `can_invite_to_party(player_info)` | `(bool, reason?)` | Returns false + reason if offline, party full, cross-play blocked, or activity blocks invites. |
 
 ### PlayerInfo (`scripts/managers/data_service/services/social/player_info.lua`)
-Each friend is a `PlayerInfo` object.
+| Method | Type | Notes |
+|--------|------|-------|
+| `account_id()` | string | Stable Fatshark ID — use as cache key. |
+| `user_display_name(use_stale, no_icon)` | string | Platform persona name. |
+| `online_status(use_stale?)` | string | `"offline"` `"platform_online"` `"online"` `"reconnecting"` |
+| `player_activity_id()` | string? | `"hub"` `"mission"` `"matchmaking"` `"main_menu"` `"end_of_round"` |
+| `party_status()` | string | `"none"` `"mine"` `"same_mission"` `"other"` `"invite_pending"` |
+| `friend_status()` | string | Fatshark-level friend status (`"friend"`, `"none"`, etc.) |
+| `platform_friend_status()` | string? | `"friend"` if on platform (Steam/Xbox/PSN) friends list; `nil` if no platform social. |
+| `is_friend()` | bool | True if Fatshark OR platform friend (not blocked). |
+| `is_own_player()` | bool | True if this is the local player. |
+| `is_blocked()` | bool | True if blocked. |
 
-| Field/method | Type | Notes |
-|--------------|------|-------|
-| `account_id()` | string | Fatshark account ID (stable key). |
-| `user_display_name(use_stale, no_icon)` | string | Platform persona name or account name. |
-| `character_name()` | string | In-game character name (may be empty if blocked). |
-| `online_status(use_stale?)` | string | `"offline"`, `"platform_online"`, `"online"`, `"reconnecting"` |
-| `player_activity_id()` | string? | Activity key: `"hub"`, `"mission"`, `"matchmaking"`, `"main_menu"`, `"end_of_round"`, etc. Full list in `presence_settings.settings`. |
-| `player_activity_loc_string()` | string? | Localization key for the activity. |
-| `is_friend()` | bool | True if confirmed friend (not blocked). |
-| `party_status()` | string | `"none"`, `"mine"`, `"same_mission"`, `"other"`, `"invite_pending"` |
-| `num_party_members()` | int | Size of friend's party. |
-
-### Presence (lower-level)
-`Managers.presence:get_presence(account_id)` → `PresenceEntryImmaterium`
-Fields: `activity_id()`, `num_party_members()`, `num_mission_members()`, `character_profile()`, `is_online()`.
+### Social constants (`scripts/managers/data_service/services/social/social_constants.lua`)
+```lua
+SocialConstants.OnlineStatus  = table.enum("offline", "platform_online", "online", "reconnecting")
+SocialConstants.PartyStatus   = table.enum("none", "mine", "same_mission", "other", "invite_pending")
+SocialConstants.FriendStatus  = table.enum("none", "friend", "invite", "invited", "ignored")
+-- table.enum makes FriendStatus.friend == "friend" (string), etc.
+```
 
 ### Relevant events (via `Managers.event`)
-| Event name | Triggered when |
-|------------|----------------|
-| `event_new_immaterium_entry` | A new presence entry arrives (friend came online or joined game) |
+| Event | Fires when |
+|-------|-----------|
+| `event_new_immaterium_entry` | Presence entry updated with fresh backend data |
 | `backend_friend_invite` | Received a friend request |
-| `backend_friend_invite_accepted` | Outgoing friend request accepted |
 | `backend_friend_removed` | Friend removed |
 | `party_immaterium_other_members_updated` | Party composition changed |
 
-## Current implementation
-`SocialNotifications.lua` polls `fetch_friends()` on a configurable interval (default 10 s), diffs each friend's `online_status` and `player_activity_id` against cached state, and fires `mod:notify()` text popups on changes.
+### Social popup menu
+`ViewElementPlayerSocialPopupContentList.from_player_info(parent, player_info)` — module-level function that builds the social popup action list. Returns `(items_table, count)` where `items_table` is a shared reused table and `count` is the number of populated entries. Hookable via `mod:hook(ContentList, "from_player_info", ...)`.
 
-## Planned improvements / open questions
+Each item has: `blueprint` (`"button"` / `"disabled_button_with_explanation"` / `"group_divider"`), `label` (string), `callback` (function), optional `is_disabled` / `reason_for_disabled`.
 
-1. **Event-driven presence updates** — Hook `event_new_immaterium_entry` (fired by `SocialService._event_new_immaterium_entry`) to react instantly instead of waiting for the poll interval. Need to investigate whether the event payload includes enough data or requires a follow-up `fetch_friends()`.
+## Feature 1: Presence notifications
 
-2. **Richer HUD widget** — Replace `mod:notify()` with a proper styled widget (icon + text) similar to how `FriendlyFireNotify` renders notifications. Look at DMF's `gui` and `ui` modules under `dmf/scripts/mods/dmf/modules/`.
+### How it works
+- Two-layer detection:
+  - **Event layer**: registered for `event_new_immaterium_entry`. Fires on any presence update; instantly processes already-known friends.
+  - **Poll layer**: `fetch_friends()` every `poll_interval` seconds. Seeds `_friend_states` on startup and catches activity changes.
+- `process_friend(player_info)` diffs `online_status` and `player_activity_id` against `_friend_states[account_id]`.
+- Fires `event_add_notification_message("custom", ...)` with color-coded left accent bars.
 
-3. **Suppress notifications during initial load** — The current seed-on-load approach works but may mis-fire if the social service isn't fully populated yet. Consider waiting for `first_update_promise()` on presence entries.
+### Filter: skip_platform_friends (default ON)
+Suppresses notifications for friends where `platform_friend_status() == FriendStatus.friend` (already on your Steam/Xbox/PSN friends list — their client shows its own online/offline toasts). State is still tracked so toggling mid-session doesn't cause spurious transitions.
 
-4. **Notification for friend joining your party / inviting you** — Hook `backend_friend_invite` and `party_immaterium_other_members_updated`.
+Does **not** apply to auto-invite — the user explicitly sets that checkbox, so platform status is irrelevant there.
 
-5. **Per-friend opt-out** — Could expose a UI to mute specific friends.
+## Feature 2: Auto-invite to Strike Team
 
-6. **Cross-platform persona names** — `user_display_name()` already handles Steam/Xbox/PSN icons. Verify rendering in the DMF notification widget.
+### How it works
+A per-friend checkbox toggle injected into the social popup (same menu as "Invite to Strike Team"). Clicking `[OFF] Auto-invite to Strike Team` enables it for that friend; clicking `[ON] Auto-invite to Strike Team` disables it.
+
+Every `auto_invite_interval` seconds (default 30s), for each watched account:
+
+| State | Action |
+|-------|--------|
+| `PartyStatus.mine` | Stop watching (they joined) |
+| `online_status == offline` | Wait |
+| `online_status == platform_online` | Wait (not in-game) |
+| `activity_id == "mission"` | Wait |
+| `party_status == invite_pending` | Wait (invite already sent) |
+| otherwise | Call `can_invite_to_party`; invite if allowed |
+
+### Persistence
+The watched list is **not** cleared on map transitions — user intent persists for the session. Future work: persist across game restarts via DMF save data.
+
+### UI note
+The toggle appears in the social popup (the context menu opened by clicking a friend in the Social tab). It does not yet appear as a visual checkbox in the roster list itself — that requires deeper blueprint injection and is deferred. After toggling, the popup must be closed and reopened to see the updated label.
 
 ## File map
 ```
 SocialNotifications/
-├── CLAUDE.md                          ← project instructions for Claude Code
-├── GOAL.md                            ← this file
-├── SocialNotifications.mod            ← DMF entry point
-├── Darktide-Source-Code/              ← game source reference (read-only)
+├── CLAUDE.md                              ← points to AGENTS.md
+├── AGENTS.md                              ← full agent context
+├── GOAL.md                                ← this file
+├── SocialNotifications.mod                ← DMF entry point
+├── Darktide-Source-Code/                  ← game source reference (read-only)
 └── scripts/mods/SocialNotifications/
-    ├── SocialNotifications.lua        ← main logic
-    ├── SocialNotifications_data.lua   ← DMF settings/metadata
+    ├── SocialNotifications.lua            ← main mod (poll loop, event handler, reset)
+    ├── SocialNotifications_autoinvite.lua ← auto-invite loop + popup hook
+    ├── SocialNotifications_data.lua       ← DMF settings/metadata
     └── SocialNotifications_localization.lua
 ```
+
+## Open work / future improvements
+
+1. **Roster-level checkbox** — Visual checkbox directly in the roster list for each friend (not just in the popup). Requires hooking the blueprint init for `player_plaque` entries. Complex; deferred.
+2. **Popup refresh after toggle** — Currently the popup label only updates after close+reopen. Could be fixed by re-triggering `set_player_info` after toggle.
+3. **Cross-session persistence** — Persist watched accounts via DMF save data.
+4. **Party/invite events** — Show a notification when someone accepts an auto-invite.
+5. **Per-friend notification muting** — UI to suppress presence notifications for specific friends.
