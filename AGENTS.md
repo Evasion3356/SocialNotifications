@@ -154,10 +154,9 @@ Loaded via `mod:io_dofile(...)` at the top of `SocialNotifications.lua`. Two res
 ## Planned work (see GOAL.md for detail)
 
 1. **Roster-level checkbox** — visual checkbox in the friend roster row itself, not just the popup. Requires blueprint injection into `player_plaque` widget passes.
-2. **Popup refresh after toggle** — re-trigger `set_player_info` so the label updates immediately without close/reopen.
-3. **Cross-session persistence** — persist `_watched` via DMF save data.
-4. **Party/invite events** — notification when auto-invite is accepted.
-5. **Per-friend notification muting** — suppress presence notifications for specific friends.
+2. **Cross-session persistence** — persist `_watched` via DMF save data.
+3. **Per-friend notification muting** — suppress presence notifications for specific friends.
+4. **PSN display name override** — `platform()` returns `""` for both Xbox and PSN friends when the immaterium entry has no platform field. Xbox is inferred from the `#NNNN` suffix, but PSN has no such marker. Add a social popup button to manually tag a friend as PSN; persist the override in mod save data and feed it into `resolve_platform`.
 
 ## Coding guidelines
 
