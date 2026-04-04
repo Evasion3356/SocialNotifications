@@ -37,10 +37,10 @@ return {
 
 	-- Auto-invite popup toggle labels
 	auto_invite_on = {
-		en = "[ON]  Auto-invite to Strike Team",
+		en = "[✓] Auto-invite to Strike Team",
 	},
 	auto_invite_off = {
-		en = "[OFF] Auto-invite to Strike Team",
+		en = "[X] Auto-invite to Strike Team",
 	},
 
 	-- Notification body text (name is shown as header / line 1)

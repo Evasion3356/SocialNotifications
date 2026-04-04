@@ -1,6 +1,7 @@
 local mod = get_mod("SocialNotifications")
 
 local SocialConstants = mod:original_require("scripts/managers/data_service/services/social/social_constants")
+local PlayerInfo      = mod:original_require("scripts/managers/data_service/services/social/player_info")
 local FriendStatus    = SocialConstants.FriendStatus
 
 local autoinvite = mod:io_dofile("SocialNotifications/scripts/mods/SocialNotifications/SocialNotifications_autoinvite")
@@ -196,3 +197,56 @@ mod.update = function(dt)
 
 	autoinvite.update(dt)
 end
+
+-- ============================================================
+-- Cross-platform display fixes
+-- ============================================================
+-- The game shows a globe icon for friends on a different platform,
+-- and stores Xbox gamertags with a "#NNNN" suffix (e.g. "SafePunjabi#3244").
+-- These hooks replace the globe with the friend's actual platform icon
+-- and strip the Xbox suffix for cleaner display everywhere in the UI.
+
+local GLYPH_GLOBE = "\238\129\175"
+local GLYPH_XBOX  = "\238\129\172"  -- raw glyph; returned by FriendXboxLive.platform_icon (offline path)
+
+local ICON_STEAM = "\238\129\171"
+local ICON_XBOX  = "{#color(16,124,16)}\238\129\172{#reset()}"
+local ICON_PSN   = "{#color(255,255,255)}\238\129\177{#reset()}"
+
+local function resolve_platform(player_info)
+	local platform = player_info:platform()
+	if platform ~= "" then return platform end
+	-- platform() returns "" when the immaterium entry has no platform field.
+	-- In Lua, "" is truthy so the "Unknown" fallback in platform() never fires.
+	-- Infer Xbox from the #NNNN suffix that Xbox appends to disambiguate gamertags.
+	local account_name = player_info._account_name
+	if account_name and account_name:match("#%d+$") then
+		return "xbox"
+	end
+	return "Unknown"
+end
+
+mod:hook(PlayerInfo, "platform_icon", function(func, self)
+	local icon, color = func(self)
+	if icon == GLYPH_GLOBE or icon == GLYPH_XBOX then
+		local platform = resolve_platform(self)
+		if platform == "steam" then
+			return ICON_STEAM
+		elseif platform == "xbox" then
+			return ICON_XBOX, true
+		elseif platform == "psn" then
+			return ICON_PSN, true
+		end
+	end
+	return icon, color
+end)
+
+mod:hook(PlayerInfo, "user_display_name", function(func, self, use_stale, no_platform_icon)
+	local name, color = func(self, use_stale, no_platform_icon)
+	-- Strip Xbox gamertag suffix (#NNNN). The suffix is Xbox-specific so safe
+	-- to apply unconditionally; no Steam or PSN names use this format.
+	if name then
+		name = name:gsub("#%d+$", "")
+	end
+	return name, color
+end)
