@@ -86,7 +86,7 @@ end
 
 -- ============================================================
 -- Hook: capture the popup element instance so the toggle callback
--- can call cb_set_player_info to refresh the menu immediately.
+-- can directly mutate _menu_widgets[1].content.text in-place.
 -- ============================================================
 
 local _current_popup = nil
@@ -134,8 +134,13 @@ mod:hook(ContentList, "from_player_info", function(original, parent, player_info
 			or  mod:localize("auto_invite_off"),
 		callback  = function()
 			toggle_watch(player_info)
-			if _current_popup then
-				_current_popup:cb_set_player_info(player_info)
+			-- Update the button label in-place: our button is always at index 1.
+			-- Avoids the full fade-out/rebuild/fade-in cycle.
+			local widgets = _current_popup and _current_popup._menu_widgets
+			if widgets and widgets[1] then
+				widgets[1].content.text = is_watching(player_info)
+					and mod:localize("auto_invite_on")
+					or  mod:localize("auto_invite_off")
 			end
 		end,
 	})
