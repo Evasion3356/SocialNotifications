@@ -237,12 +237,13 @@ local function resolve_platform(player_info)
 	if platform ~= "" then return platform end
 	-- platform() returns "" when the immaterium entry has no platform field.
 	-- In Lua, "" is truthy so the "Unknown" fallback in platform() never fires.
-	-- Infer Xbox from the #NNNN suffix that Xbox appends to disambiguate gamertags.
+	-- Infer Xbox from the #NNNN suffix that Xbox appends to disambiguate gamertags;
+	-- anything else with no platform field is assumed to be PSN.
 	local account_name = player_info._account_name
 	if account_name and account_name:match("#%d+$") then
 		return "xbox"
 	end
-	return "Unknown"
+	return "psn"
 end
 
 mod:hook(PlayerInfo, "platform_icon", function(func, self)
@@ -318,6 +319,112 @@ mod:command("social_test", "Fire a test 'online' notification using the local pl
 	else
 		mod:notify(combined)
 	end
+end)
+
+-- ============================================================
+-- Debug command: /social_dump
+-- For every friend where platform() returns "", dumps all raw
+-- PlayerInfo fields, platform_social (if any), and the full
+-- immaterium entry + key_values so we can identify PSN vs Xbox.
+-- ============================================================
+
+mod:command("social_dump", "Dump raw PlayerInfo data for friends with unknown platform", function()
+	local social = Managers.data_service and Managers.data_service.social
+	if not social then
+		mod:notify("social_dump: social service not available")
+		return
+	end
+
+	social:fetch_friends():next(function(friends)
+		if not friends then
+			mod:notify("social_dump: no friend list returned")
+			return
+		end
+
+		local count = 0
+		for _, pi in ipairs(friends) do
+			if pi:platform() == "" then
+				count = count + 1
+				local sep = "----------------------------------------"
+				mod:info(sep)
+				mod:info(string.format("[DUMP] Friend #%d", count))
+
+				-- PlayerInfo raw fields
+				mod:info(string.format("  _account_id       = %s", tostring(pi._account_id)))
+				mod:info(string.format("  _account_name     = %s", tostring(pi._account_name)))
+				mod:info(string.format("  _platform         = %s", tostring(pi._platform)))
+				mod:info(string.format("  _platform_id      = %s", tostring(pi._platform_id)))
+				mod:info(string.format("  _friend_status    = %s", tostring(pi._friend_status)))
+				mod:info(string.format("  _is_blocked       = %s", tostring(pi._is_blocked)))
+				mod:info(string.format("  _is_party_member  = %s", tostring(pi._is_party_member)))
+				mod:info(string.format("  _online_status    = %s", tostring(pi._online_status)))
+
+				-- PlayerInfo method results
+				mod:info(string.format("  platform()             = %s", tostring(pi:platform())))
+				mod:info(string.format("  platform_user_id()     = %s", tostring(pi:platform_user_id())))
+				mod:info(string.format("  online_status()        = %s", tostring(pi:online_status())))
+				mod:info(string.format("  player_activity_id()   = %s", tostring(pi:player_activity_id())))
+				mod:info(string.format("  friend_status()        = %s", tostring(pi:friend_status())))
+				mod:info(string.format("  platform_friend_status()= %s", tostring(pi:platform_friend_status())))
+				mod:info(string.format("  is_friend()            = %s", tostring(pi:is_friend())))
+				mod:info(string.format("  is_blocked()           = %s", tostring(pi:is_blocked())))
+				mod:info(string.format("  cross_play_disabled()  = %s", tostring(pi:cross_play_disabled())))
+				mod:info(string.format("  is_cross_playing()     = %s", tostring(pi:is_cross_playing())))
+
+				-- platform_social
+				local ps = pi._platform_social
+				if ps then
+					mod:info("  platform_social:")
+					mod:info(string.format("    platform()  = %s", tostring(ps.platform and ps:platform() or "N/A")))
+					mod:info(string.format("    id()        = %s", tostring(ps.id and ps:id() or "N/A")))
+					mod:info(string.format("    name()      = %s", tostring(ps.name and ps:name() or "N/A")))
+					mod:info(string.format("    is_friend() = %s", tostring(ps.is_friend and ps:is_friend() or "N/A")))
+					mod:info(string.format("    online_status() = %s", tostring(ps.online_status and ps:online_status() or "N/A")))
+					-- dump the raw _friend_data table if present
+					if ps._friend_data then
+						mod:info("    _friend_data fields:")
+						for k, v in pairs(ps._friend_data) do
+							if type(v) ~= "table" then
+								mod:info(string.format("      %s = %s", tostring(k), tostring(v)))
+							end
+						end
+					end
+				else
+					mod:info("  platform_social: nil")
+				end
+
+				-- presence / immaterium entry
+				local presence = pi._presence
+				if presence and presence._immaterium_entry then
+					local e = presence._immaterium_entry
+					mod:info("  immaterium_entry:")
+					mod:info(string.format("    account_id      = %s", tostring(e.account_id)))
+					mod:info(string.format("    account_name    = %s", tostring(e.account_name)))
+					mod:info(string.format("    platform        = %s", tostring(e.platform)))
+					mod:info(string.format("    platform_user_id= %s", tostring(e.platform_user_id)))
+					mod:info(string.format("    status          = %s", tostring(e.status)))
+					mod:info(string.format("    last_update     = %s", tostring(e.last_update)))
+					if e.key_values then
+						mod:info("    key_values:")
+						for k, v in pairs(e.key_values) do
+							local val = type(v) == "table" and tostring(v.value) or tostring(v)
+							mod:info(string.format("      %s = %s", tostring(k), val))
+						end
+					else
+						mod:info("    key_values: nil")
+					end
+				else
+					mod:info("  presence: nil or no immaterium_entry")
+				end
+			end
+		end
+
+		if count == 0 then
+			mod:info("social_dump: no friends with platform() == \"\" found")
+		else
+			mod:info(string.format("social_dump: dumped %d friend(s)", count))
+		end
+	end)
 end)
 
 mod:hook(PlayerInfo, "user_display_name", function(func, self, use_stale, no_platform_icon)

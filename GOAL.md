@@ -112,4 +112,3 @@ SocialNotifications/
 1. **Roster-level checkbox** — Visual checkbox directly in the roster list for each friend (not just in the popup). Requires hooking the blueprint init for `player_plaque` entries. Complex; deferred.
 2. **Cross-session persistence** — Persist watched accounts via DMF save data.
 3. **Per-friend notification muting** — UI to suppress presence notifications for specific friends.
-4. **PSN display name override** — `platform()` returns `""` for both Xbox and PSN cross-platform friends; the current code infers Xbox from the `#NNNN` gamertag suffix, but PSN names do not have that suffix and are currently left as-is with no platform label. Add a button to the social popup (similar to the auto-invite toggle) that lets the user manually tag a friend as PSN, storing the override in mod save data. When tagged, `resolve_platform` should return `"psn"` for that account, causing the PSN icon to render and removing any ambiguity.
