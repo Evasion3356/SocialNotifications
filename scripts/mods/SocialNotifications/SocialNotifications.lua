@@ -2,6 +2,8 @@ local mod = get_mod("SocialNotifications")
 
 local SocialConstants = mod:original_require("scripts/managers/data_service/services/social/social_constants")
 local PlayerInfo      = mod:original_require("scripts/managers/data_service/services/social/player_info")
+local UISettings      = mod:original_require("scripts/settings/ui/ui_settings")
+local NotifFeed       = mod:original_require("scripts/ui/constant_elements/elements/notification_feed/constant_element_notification_feed")
 local FriendStatus    = SocialConstants.FriendStatus
 
 local autoinvite = mod:io_dofile("SocialNotifications/scripts/mods/SocialNotifications/SocialNotifications_autoinvite")
@@ -38,6 +40,22 @@ local _poll_timer        = 0
 local _events_registered = false
 
 -- ============================================================
+-- Hook: extend "custom" notification type to support player portraits.
+-- _generate_notification_data strips unknown fields for "custom", so
+-- use_player_portrait and player never reach the portrait-loading code.
+-- This hook re-adds them after the original runs.
+-- ============================================================
+
+mod:hook(NotifFeed, "_generate_notification_data", function(original, self, message_type, data)
+	local notification_data = original(self, message_type, data)
+	if notification_data and message_type == "custom" and data.player and data.use_player_portrait then
+		notification_data.player             = data.player
+		notification_data.use_player_portrait = true
+	end
+	return notification_data
+end)
+
+-- ============================================================
 -- Notification display
 -- ============================================================
 
@@ -46,17 +64,18 @@ local function show_notification(name, body, colors)
 	-- event_add_notification_message is handled by ConstantElementNotificationFeed
 	-- with message_type "custom": line_1/line_2 are the two text rows,
 	-- line_color is the left accent bar, color is the background.
+	-- icon + icon_size = "medium" gives the two-column layout (80x80 portrait frame
+	-- on the left, text offset 130px) matching the currency pickup appearance.
 	if Managers.event then
 		Managers.event:trigger("event_add_notification_message", "custom", {
-			line_1       = name,
+			line_1       = name .. "\n" .. body,
 			line_1_color = { 255, 240, 240, 240 },
-			line_2       = body,
-			line_2_color = { 255, 175, 175, 175 },
+			icon         = "content/ui/materials/base/ui_portrait_frame_base",
+			icon_size    = "medium",
 			color        = colors[2],
 			line_color   = colors[1],
 			glow_opacity = 0,
-			show_shine   = false,
-			scale_icon   = false,
+			show_shine   = true,
 		})
 	else
 		mod:notify(string.format("%s — %s", name, body))
@@ -239,6 +258,66 @@ mod:hook(PlayerInfo, "platform_icon", function(func, self)
 		end
 	end
 	return icon, color
+end)
+
+-- ============================================================
+-- Test command: /social_test
+-- Fetches the first useable friend, runs from_player_info (which
+-- triggers the autoinvite hook), and prints every popup item label
+-- so we can verify the injection without opening the real UI.
+-- ============================================================
+
+mod:command("social_test", "Fire a test 'online' notification using the local player's portrait and character data", function()
+	local local_player = Managers.player and Managers.player:local_player(1)
+	if not local_player then
+		mod:notify("social_test: local player not available")
+		return
+	end
+
+	local profile = local_player:profile()
+	if not profile then
+		mod:notify("social_test: profile not loaded")
+		return
+	end
+
+	-- Line 1: class glyph + character name
+	local archetype_name = local_player:archetype_name()
+	local archetype_icon = archetype_name and UISettings.archetype_font_icon_simple[archetype_name] or ""
+	local char_name      = profile.name or "Unknown"
+	local line_1         = (archetype_icon ~= "" and (archetype_icon .. " ") or "") .. char_name
+
+	-- Line 2: platform display name + status
+	-- Look up our own player_info from the social service to get the account (Steam) name.
+	local account_name = char_name
+	local social = Managers.data_service and Managers.data_service.social
+	if social then
+		local own_info = social:get_player_info_by_account_id(local_player:account_id())
+		if own_info then
+			local display = own_info:user_display_name(true, true)
+			if display and display ~= "" and display ~= "N/A" then
+				account_name = display
+			end
+		end
+	end
+	local account_display = account_name .. " " .. mod:localize("notif_online_body")
+	local combined = line_1 .. "\n" .. account_display
+
+	if Managers.event then
+		Managers.event:trigger("event_add_notification_message", "custom", {
+			line_1              = combined,
+			line_1_color        = { 255, 240, 240, 240 },
+			icon                = "content/ui/materials/base/ui_portrait_frame_base",
+			icon_size           = "medium",
+			use_player_portrait = true,
+			player              = local_player,
+			color               = NOTIF_COLORS.online[2],
+			line_color          = NOTIF_COLORS.online[1],
+			glow_opacity        = 0,
+			show_shine          = true,
+		})
+	else
+		mod:notify(combined)
+	end
 end)
 
 mod:hook(PlayerInfo, "user_display_name", function(func, self, use_stale, no_platform_icon)
