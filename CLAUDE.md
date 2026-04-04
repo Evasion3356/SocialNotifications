@@ -1,5 +1,3 @@
-# Project: SocialNotifications
+# SocialNotifications
 
-## Directory structure
-
-- `scripts/mods/gir489/scripts/` — Game source code (Warhammer 40,000: Darktide). Reference only; do not modify.
+See [AGENTS.md](AGENTS.md) for full project context, API references, coding guidelines, and planned work.
