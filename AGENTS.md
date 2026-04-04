@@ -114,19 +114,29 @@ Relevant events:
 
 ## Current implementation summary
 
-`SocialNotifications.lua` implements a poll-and-diff loop:
+`SocialNotifications.lua` uses a two-layer approach:
 
-1. `on_all_mods_loaded` and `on_game_state_changed` reset cached state and call `poll_friends()` once to seed it silently (no notifications on first read).
-2. `mod.update(dt)` accumulates `dt` and calls `poll_friends()` every `poll_interval` seconds.
-3. `poll_friends()` calls `fetch_friends():next(...)` and passes each online friend to `process_friend(player_info)`.
-4. `process_friend` diffs `online_status` and `player_activity_id` against `_friend_states[account_id]` and calls `notify()` on changes.
+**Event-driven layer** — `mod._on_immaterium_entry` is registered for `event_new_immaterium_entry` (fires from `PresenceEntryImmaterium:update_with()` on every fresh presence update from the backend). It looks up the changed friend in `_friend_states` (populated by the poll) and calls `process_friend` immediately, giving near-instant online/offline notifications.
+
+**Poll layer** — `mod.update(dt)` calls `poll_friends()` every `poll_interval` seconds (default 10s) via `fetch_friends():next(...)`. This seeds `_friend_states` on startup (silently, no notifications), catches activity changes (`hub` → `mission` → `matchmaking`), and handles friends who join after the event handler was registered.
+
+**Diff + notify** — `process_friend(player_info)` diffs `online_status` and `player_activity_id` against cached state and triggers `event_add_notification_message` with type `"custom"`. Notifications show the friend's name as the header (line 1) and status as the body (line 2), with a color-coded left accent bar per event type.
+
+**Color scheme** (`NOTIF_COLORS`):
+- Online: green `{100, 220, 120}`
+- Offline: gray `{130, 130, 130}`
+- Mission: amber `{240, 150, 60}`
+- Mission end: soft blue `{140, 175, 220}`
+- Matchmaking: purple-blue `{120, 140, 220}`
+- Hub: teal `{60, 200, 185}`
+
+**State reset** — `reset_state()` clears `_friend_states` and re-runs the seed poll on `on_all_mods_loaded` and when entering `GameplayStateRun` / `StateMainMenu`, preventing stale transitions from firing spurious notifications across map loads.
 
 ## Planned work (see GOAL.md for detail)
 
-1. **Event-driven** — hook `event_new_immaterium_entry` to react instantly instead of waiting for the poll interval.
-2. **Richer widget** — replace `mod:notify()` with a styled HUD widget (portrait icon + colored text).
-3. **Party/invite events** — hook `backend_friend_invite` and `party_immaterium_other_members_updated`.
-4. **Per-friend muting** — UI to suppress notifications for specific friends.
+1. **Party/invite events** — hook `backend_friend_invite` and `party_immaterium_other_members_updated`.
+2. **Per-friend muting** — UI to suppress notifications for specific friends.
+3. **Sound** — pass a custom `sound_event` to `event_add_notification_message` for a distinct audio cue.
 
 ## Coding guidelines
 

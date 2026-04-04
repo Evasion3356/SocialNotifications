@@ -28,27 +28,24 @@ return {
 	poll_interval = {
 		en = "Poll interval (seconds)",
 	},
-	notification_duration = {
-		en = "Notification duration (seconds)",
-	},
 
-	-- Notification text
-	notif_online = {
-		en = "%s is now online",
+	-- Notification body text (name is shown as header / line 1)
+	notif_online_body = {
+		en = "is now online",
 	},
-	notif_offline = {
-		en = "%s went offline",
+	notif_offline_body = {
+		en = "went offline",
 	},
-	notif_mission = {
-		en = "%s entered a mission",
+	notif_mission_body = {
+		en = "entered a mission",
 	},
-	notif_mission_end = {
-		en = "%s left a mission",
+	notif_mission_end_body = {
+		en = "left a mission",
 	},
-	notif_matchmaking = {
-		en = "%s is looking for a mission",
+	notif_matchmaking_body = {
+		en = "is looking for a mission",
 	},
-	notif_hub = {
-		en = "%s returned to the Mourningstar",
+	notif_hub_body = {
+		en = "returned to the Mourningstar",
 	},
 }
