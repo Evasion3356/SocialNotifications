@@ -25,6 +25,9 @@ return {
 	notify_hub = {
 		en = "Notify: Friend enters hub",
 	},
+	skip_platform_friends = {
+		en = "Skip platform friends (Steam/Xbox/PSN)",
+	},
 	poll_interval = {
 		en = "Poll interval (seconds)",
 	},

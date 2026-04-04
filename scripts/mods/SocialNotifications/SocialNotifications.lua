@@ -1,5 +1,8 @@
 local mod = get_mod("SocialNotifications")
 
+local SocialConstants = mod:original_require("scripts/managers/data_service/services/social/social_constants")
+local FriendStatus    = SocialConstants.FriendStatus
+
 -- ============================================================
 -- Constants
 -- ============================================================
@@ -81,25 +84,34 @@ local function process_friend(player_info)
 	end
 	name = (name ~= nil and name ~= "") and name or "Unknown"
 
-	-- Online / offline transitions
-	if new_online ~= prev.online then
-		if new_online and mod:get("notify_online") then
-			show_notification(name, mod:localize("notif_online_body"), NOTIF_COLORS.online)
-		elseif not new_online and mod:get("notify_offline") then
-			show_notification(name, mod:localize("notif_offline_body"), NOTIF_COLORS.offline)
-		end
-	end
+	-- When skip_platform_friends is on (default), suppress notifications for
+	-- friends who are already on the platform friends list (Steam/Xbox/PSN).
+	-- Their client handles online/offline notifications natively.
+	-- State is still updated so toggling the setting mid-session stays clean.
+	local suppress = mod:get("skip_platform_friends")
+		and player_info:platform_friend_status() == FriendStatus.friend
 
-	-- Activity transitions (only meaningful while online)
-	if new_online and new_activity ~= prev.activity then
-		if new_activity == ACTIVITY_MISSION and mod:get("notify_mission_start") then
-			show_notification(name, mod:localize("notif_mission_body"), NOTIF_COLORS.mission)
-		elseif prev.activity == ACTIVITY_MISSION and mod:get("notify_mission_end") then
-			show_notification(name, mod:localize("notif_mission_end_body"), NOTIF_COLORS.mission_end)
-		elseif new_activity == ACTIVITY_MATCHMAKING and mod:get("notify_matchmaking") then
-			show_notification(name, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
-		elseif new_activity == ACTIVITY_HUB and mod:get("notify_hub") then
-			show_notification(name, mod:localize("notif_hub_body"), NOTIF_COLORS.hub)
+	if not suppress then
+		-- Online / offline transitions
+		if new_online ~= prev.online then
+			if new_online and mod:get("notify_online") then
+				show_notification(name, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+			elseif not new_online and mod:get("notify_offline") then
+				show_notification(name, mod:localize("notif_offline_body"), NOTIF_COLORS.offline)
+			end
+		end
+
+		-- Activity transitions (only meaningful while online)
+		if new_online and new_activity ~= prev.activity then
+			if new_activity == ACTIVITY_MISSION and mod:get("notify_mission_start") then
+				show_notification(name, mod:localize("notif_mission_body"), NOTIF_COLORS.mission)
+			elseif prev.activity == ACTIVITY_MISSION and mod:get("notify_mission_end") then
+				show_notification(name, mod:localize("notif_mission_end_body"), NOTIF_COLORS.mission_end)
+			elseif new_activity == ACTIVITY_MATCHMAKING and mod:get("notify_matchmaking") then
+				show_notification(name, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
+			elseif new_activity == ACTIVITY_HUB and mod:get("notify_hub") then
+				show_notification(name, mod:localize("notif_hub_body"), NOTIF_COLORS.hub)
+			end
 		end
 	end
 
