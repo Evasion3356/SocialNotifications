@@ -38,6 +38,8 @@ local NOTIF_COLORS = {
 local _friend_states     = {}   -- [account_id] = { online, activity }
 local _poll_timer        = 0
 local _events_registered = false
+local _seeding           = false  -- true while the initial seed poll is in-flight
+local _pending_online    = {}   -- [account_id] = { name, deadline } — online notifications deferred until character profile arrives
 
 -- ============================================================
 -- Hook: extend "custom" notification type to support player portraits.
@@ -59,52 +61,126 @@ end)
 -- Notification display
 -- ============================================================
 
-local function show_notification(name, body, colors)
-	-- Use the game's native notification feed when the UI is active.
-	-- event_add_notification_message is handled by ConstantElementNotificationFeed
-	-- with message_type "custom": line_1/line_2 are the two text rows,
-	-- line_color is the left accent bar, color is the background.
-	-- icon + icon_size = "medium" gives the two-column layout (80x80 portrait frame
-	-- on the left, text offset 130px) matching the currency pickup appearance.
-	if Managers.event then
-		Managers.event:trigger("event_add_notification_message", "custom", {
-			line_1       = name .. "\n" .. body,
-			line_1_color = { 255, 240, 240, 240 },
-			icon         = "content/ui/materials/base/ui_portrait_frame_base",
-			icon_size    = "medium",
-			color        = colors[2],
-			line_color   = colors[1],
-			glow_opacity = 0,
-			show_shine   = true,
-		})
-	else
-		mod:notify(string.format("%s — %s", name, body))
+-- Returns the best human-readable name for a friend: character name when the
+-- presence profile has loaded, platform display name as fallback.
+local function friendly_name(player_info)
+	local char_name = player_info:character_name()
+	if char_name and char_name ~= "" then
+		return char_name
 	end
+	local display = player_info:user_display_name(true, true)
+	if display and display ~= "" and display ~= "N/A" then
+		return display
+	end
+	return "Unknown"
+end
+
+-- Build and fire a notification for a friend.
+-- player_info drives everything: character name, archetype icon, platform display
+-- name, and portrait. When profile() is available the notification gets:
+--   Line 1: [archetype icon] character name
+--   Line 2: [platform icon] display name + body text
+--   Portrait: character portrait via Managers.ui:load_profile_portrait
+-- Falls back to a single line with display name when profile isn't loaded yet.
+local function show_notification(player_info, body, colors)
+	if not Managers.event then
+		mod:notify(string.format("%s — %s", friendly_name(player_info), body))
+		return
+	end
+
+	local profile = player_info and player_info:profile()
+	local line1, line2
+
+	if profile then
+		-- Line 1: archetype icon + character name
+		local char_name = (profile.name and profile.name ~= "") and profile.name or friendly_name(player_info)
+		local archetype_name = profile.archetype and profile.archetype.archetype_name
+		-- archetype_name is a loc key like "loc_class_psyker_name"; extract the identifier.
+		local archetype_id = archetype_name and archetype_name:match("^loc_class_(.+)_name$")
+		local arch_icon = archetype_id and UISettings.archetype_font_icon_simple[archetype_id] or ""
+		line1 = arch_icon ~= "" and (arch_icon .. " " .. char_name) or char_name
+
+		-- Line 2: platform display name (with embedded platform icon glyph) + body
+		-- user_display_name(stale=true, no_icon=false) returns "[glyph] Name"
+		local display = player_info:user_display_name(true, false)
+		if not display or display == "" or display == "N/A" then
+			display = player_info:user_display_name(true, true)
+		end
+		line2 = ((display and display ~= "") and display or "Unknown") .. " " .. body
+
+		mod:info("[SN] show_notification profile dump — char=%s archetype_id=%s arch_icon=%s display=%s",
+			tostring(char_name), tostring(archetype_id), tostring(arch_icon ~= ""), tostring(display))
+	else
+		-- Profile not loaded yet; single-line fallback
+		line1 = friendly_name(player_info) .. "\n" .. body
+	end
+
+	local data = {
+		line_1       = line2 and (line1 .. "\n" .. line2) or line1,
+		line_1_color = { 255, 240, 240, 240 },
+		icon         = "content/ui/materials/base/ui_portrait_frame_base",
+		icon_size    = "medium",
+		color        = colors[2],
+		line_color   = colors[1],
+		glow_opacity = 0,
+		show_shine   = true,
+	}
+	if profile then
+		data.player             = player_info
+		data.use_player_portrait = true
+	end
+	Managers.event:trigger("event_add_notification_message", "custom", data)
 end
 
 -- ============================================================
 -- Core: diff one friend, fire notifications on changes
 -- ============================================================
 
-local function process_friend(player_info)
+local function process_friend(player_info, source)
 	local account_id = player_info:account_id()
 	if not account_id then return end
 
-	local new_online   = ONLINE_STATUSES[player_info:online_status(true)] == true
+	local new_online   = ONLINE_STATUSES[player_info:online_status()] == true
 	local new_activity = player_info:player_activity_id()
 	local prev         = _friend_states[account_id]
 
+	local short_id = account_id:sub(-6)
+
 	if not prev then
-		-- First sight — seed state silently, no notification.
+		-- First sight — seed state. During the initial seed poll (_seeding=true) this is
+		-- always silent (baseline snapshot). After seeding, a newly-seen online friend
+		-- means they just came online, so fire the notification.
+		mod:info("[SN:%s] first-sight via %s — seeding online=%s activity=%s seeding=%s",
+			short_id, source or "?", tostring(new_online), tostring(new_activity), tostring(_seeding))
 		_friend_states[account_id] = { online = new_online, activity = new_activity }
+		if not _seeding and new_online and mod:get("notify_online") then
+			local suppress = mod:get("skip_platform_friends")
+				and player_info:platform_friend_status() == FriendStatus.friend
+			if not suppress then
+				if player_info:character_name() == "" then
+					mod:info("[SN:%s] first-sight online deferred (no character profile yet)", short_id)
+					local deadline = (Managers.time and Managers.time:time("main") or 0) + 6
+					_pending_online[account_id] = { deadline = deadline }
+				else
+					mod:info("[SN:%s] first-sight NOTIFY online", short_id)
+					show_notification(player_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+				end
+			else
+				mod:info("[SN:%s] first-sight online suppressed (platform friend)", short_id)
+			end
+		end
 		return
 	end
 
-	local name = player_info:user_display_name(true, true)
-	if not name or name == "" or name == "N/A" then
-		name = player_info:character_name()
+	local online_changed   = new_online ~= prev.online
+	local activity_changed = new_online and new_activity ~= prev.activity
+
+	if online_changed or activity_changed then
+		mod:info("[SN:%s] diff via %s — online %s->%s  activity %s->%s",
+			short_id, source or "?",
+			tostring(prev.online), tostring(new_online),
+			tostring(prev.activity), tostring(new_activity))
 	end
-	name = (name ~= nil and name ~= "") and name or "Unknown"
 
 	-- When skip_platform_friends is on (default), suppress notifications for
 	-- friends who are already on the platform friends list (Steam/Xbox/PSN).
@@ -113,32 +189,50 @@ local function process_friend(player_info)
 	local suppress = mod:get("skip_platform_friends")
 		and player_info:platform_friend_status() == FriendStatus.friend
 
+	-- Update state before notifying so that any re-entrant event fired during
+	-- show_notification sees the already-committed new state and produces no diff.
+	local prev_activity = prev.activity
+	prev.online   = new_online
+	prev.activity = new_activity
+
 	if not suppress then
 		-- Online / offline transitions
-		if new_online ~= prev.online then
+		if online_changed then
 			if new_online and mod:get("notify_online") then
-				show_notification(name, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+				if player_info:character_name() == "" then
+					-- Character profile hasn't arrived yet (comes in a later presence update).
+					-- Defer the notification; _on_immaterium_entry will flush it once the profile lands.
+					mod:info("[SN:%s] online notification deferred (no character profile yet)", short_id)
+					local deadline = (Managers.time and Managers.time:time("main") or 0) + 6
+					_pending_online[account_id] = { deadline = deadline }
+				else
+					mod:info("[SN:%s] NOTIFY online", short_id)
+					show_notification(player_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+				end
 			elseif not new_online and mod:get("notify_offline") then
-				show_notification(name, mod:localize("notif_offline_body"), NOTIF_COLORS.offline)
+				_pending_online[account_id] = nil  -- cancel any deferred online notif if they went offline first
+				mod:info("[SN:%s] NOTIFY offline", short_id)
+				show_notification(player_info, mod:localize("notif_offline_body"), NOTIF_COLORS.offline)
 			end
 		end
 
 		-- Activity transitions (only meaningful while online)
-		if new_online and new_activity ~= prev.activity then
+		if activity_changed then
 			if new_activity == ACTIVITY_MISSION and mod:get("notify_mission_start") then
-				show_notification(name, mod:localize("notif_mission_body"), NOTIF_COLORS.mission)
-			elseif prev.activity == ACTIVITY_MISSION and mod:get("notify_mission_end") then
-				show_notification(name, mod:localize("notif_mission_end_body"), NOTIF_COLORS.mission_end)
+				mod:info("[SN:%s] NOTIFY mission", short_id)
+				show_notification(player_info, mod:localize("notif_mission_body"), NOTIF_COLORS.mission)
+			elseif prev_activity == ACTIVITY_MISSION and mod:get("notify_mission_end") then
+				mod:info("[SN:%s] NOTIFY mission_end", short_id)
+				show_notification(player_info, mod:localize("notif_mission_end_body"), NOTIF_COLORS.mission_end)
 			elseif new_activity == ACTIVITY_MATCHMAKING and mod:get("notify_matchmaking") then
-				show_notification(name, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
+				mod:info("[SN:%s] NOTIFY matchmaking", short_id)
+				show_notification(player_info, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
 			elseif new_activity == ACTIVITY_HUB and mod:get("notify_hub") then
-				show_notification(name, mod:localize("notif_hub_body"), NOTIF_COLORS.hub)
+				mod:info("[SN:%s] NOTIFY hub", short_id)
+				show_notification(player_info, mod:localize("notif_hub_body"), NOTIF_COLORS.hub)
 			end
 		end
 	end
-
-	prev.online   = new_online
-	prev.activity = new_activity
 end
 
 -- ============================================================
@@ -150,10 +244,61 @@ local function poll_friends()
 	if not social then return end
 
 	social:fetch_friends():next(function(friends)
-		if not friends then return end
+		-- Keep _seeding = true while iterating so that first-sight of already-online
+		-- friends in the seed poll is treated as a silent baseline snapshot, not a
+		-- "came online" event. Set it to false only after the loop completes.
+		local was_seeding = _seeding
+		if not friends then
+			_seeding = false
+			return
+		end
 		for _, player_info in ipairs(friends) do
 			if player_info:is_friend() then
-				process_friend(player_info)
+				process_friend(player_info, "poll")
+			end
+		end
+		_seeding = false
+
+		local now = Managers.time and Managers.time:time("main") or 0
+
+		-- After the seed poll: queue "came online" notifications for every friend who
+		-- was already online when the mod loaded. We stayed silent during seeding to
+		-- avoid false positives on startup; now surface them via the deferred path so
+		-- we wait for the character profile before showing the notification.
+		if was_seeding then
+			for account_id, state in pairs(_friend_states) do
+				if state.online and not _pending_online[account_id] and mod:get("notify_online") then
+					local pi = social:get_player_info_by_account_id(account_id)
+					if pi and pi:is_friend() then
+						local suppress = mod:get("skip_platform_friends")
+							and pi:platform_friend_status() == FriendStatus.friend
+						if not suppress then
+							if pi:character_name() ~= "" then
+								mod:info("[SN:%s] NOTIFY online (post-seed, profile ready)", account_id:sub(-6))
+								show_notification(pi, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+							else
+								mod:info("[SN:%s] online deferred post-seed (no profile yet)", account_id:sub(-6))
+								_pending_online[account_id] = { deadline = now + 6 }
+							end
+						end
+					end
+				end
+			end
+		end
+
+		-- Every poll: flush pending notifications where the character profile has now arrived.
+		-- This is the fallback for friends who never trigger another presence event
+		-- (e.g. someone who stays in a mission without any state change).
+		for account_id, pending in pairs(_pending_online) do
+			local pi = social:get_player_info_by_account_id(account_id)
+			if pi then
+				if pi:character_name() ~= "" or now >= pending.deadline then
+					_pending_online[account_id] = nil
+					if mod:get("notify_online") then
+						mod:info("[SN:%s] NOTIFY online (poll flush, char=%s)", account_id:sub(-6), tostring(pi:character_name() ~= ""))
+						show_notification(pi, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+					end
+				end
 			end
 		end
 	end)
@@ -169,14 +314,36 @@ end
 mod._on_immaterium_entry = function(self, new_entry)
 	local account_id = new_entry and new_entry.account_id
 	if not account_id or account_id == "" then return end
-	if not _friend_states[account_id] then return end
+	-- While the initial seed poll is in-flight, ignore events for friends we haven't
+	-- seen yet — they'll be captured by the poll. After seeding, let unseen friends
+	-- through so process_friend can fire "came online" for them.
+	if not _friend_states[account_id] and _seeding then return end
 
 	local social = Managers.data_service and Managers.data_service.social
 	if not social then return end
 
 	local player_info = social:get_player_info_by_account_id(account_id)
-	if player_info then
-		process_friend(player_info)
+	if not player_info then return end
+
+	-- Flush a deferred online notification now that a new presence update arrived.
+	-- The character profile typically lands in the second update, a few seconds after
+	-- the status-change update that first triggered the "came online" detection.
+	local pending = _pending_online[account_id]
+	if pending and player_info:is_friend() then
+		local char_name = player_info:character_name()
+		local now = Managers.time and Managers.time:time("main") or 0
+		if char_name ~= "" or now >= pending.deadline then
+			_pending_online[account_id] = nil
+			if mod:get("notify_online") then
+				mod:info("[SN:%s] NOTIFY online (deferred flush, char=%s deadline=%s)",
+					account_id:sub(-6), tostring(char_name ~= ""), tostring(now >= pending.deadline))
+				show_notification(player_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+			end
+		end
+	end
+
+	if player_info:is_friend() then
+		process_friend(player_info, "event")
 	end
 end
 
@@ -185,10 +352,12 @@ end
 -- ============================================================
 
 local function reset_state()
-	_friend_states = {}
-	_poll_timer    = 0
+	_friend_states  = {}
+	_pending_online = {}
+	_poll_timer     = 0
+	_seeding        = true
 	autoinvite.reset_timer()
-	poll_friends()  -- seeds _friend_states without notifying
+	poll_friends()  -- seeds _friend_states without notifying; clears _seeding when done
 end
 
 mod.on_all_mods_loaded = function()
