@@ -46,13 +46,13 @@ def strip_dev_content(source):
 
 with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
     mod_file = os.path.join(script_dir, "SocialNotifications.mod")
-    zf.write(mod_file, "SocialNotifications.mod")
+    zf.write(mod_file, "SocialNotifications/SocialNotifications.mod")
 
     scripts_dir = os.path.join(script_dir, "scripts")
     for root, dirs, files in os.walk(scripts_dir):
         for file in files:
             full_path = os.path.join(root, file)
-            arcname = os.path.relpath(full_path, script_dir)
+            arcname = "SocialNotifications/" + os.path.relpath(full_path, script_dir)
             if file.endswith('.lua'):
                 with open(full_path, 'r', encoding='utf-8') as f:
                     source = f.read()
