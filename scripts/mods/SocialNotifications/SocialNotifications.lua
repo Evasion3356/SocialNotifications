@@ -136,13 +136,20 @@ end
 -- Core: diff one friend, fire notifications on changes
 -- ============================================================
 
+local function get_last_update(player_info)
+	local presence = player_info._presence
+	local entry = presence and presence._immaterium_entry
+	return entry and entry.last_update
+end
+
 local function process_friend(player_info, source)
 	local account_id = player_info:account_id()
 	if not account_id then return end
 
-	local new_online   = ONLINE_STATUSES[player_info:online_status()] == true
-	local new_activity = player_info:player_activity_id()
-	local prev         = _friend_states[account_id]
+	local new_online      = ONLINE_STATUSES[player_info:online_status()] == true
+	local new_activity    = player_info:player_activity_id()
+	local new_last_update = get_last_update(player_info)
+	local prev            = _friend_states[account_id]
 
 	local short_id = account_id:sub(-6)
 
@@ -152,7 +159,7 @@ local function process_friend(player_info, source)
 		-- means they just came online, so fire the notification.
 		mod:info("[SN:%s] first-sight via %s — seeding online=%s activity=%s seeding=%s",
 			short_id, source or "?", tostring(new_online), tostring(new_activity), tostring(_seeding))
-		_friend_states[account_id] = { online = new_online, activity = new_activity }
+		_friend_states[account_id] = { online = new_online, activity = new_activity, last_update = new_last_update }
 		if not _seeding and new_online and mod:get("notify_online") then
 			local suppress = mod:get("skip_platform_friends")
 				and player_info:platform_friend_status() == FriendStatus.friend
@@ -172,14 +179,21 @@ local function process_friend(player_info, source)
 		return
 	end
 
+	-- If last_update hasn't changed, the backend hasn't sent any new presence data —
+	-- nothing could have changed, so skip the diff entirely.
+	if new_last_update and new_last_update == prev.last_update then
+		return
+	end
+
 	local online_changed   = new_online ~= prev.online
 	local activity_changed = new_online and new_activity ~= prev.activity
 
 	if online_changed or activity_changed then
-		mod:info("[SN:%s] diff via %s — online %s->%s  activity %s->%s",
+		mod:info("[SN:%s] diff via %s — online %s->%s  activity %s->%s (last_update %s->%s)",
 			short_id, source or "?",
 			tostring(prev.online), tostring(new_online),
-			tostring(prev.activity), tostring(new_activity))
+			tostring(prev.activity), tostring(new_activity),
+			tostring(prev.last_update), tostring(new_last_update))
 	end
 
 	-- When skip_platform_friends is on (default), suppress notifications for
@@ -192,8 +206,9 @@ local function process_friend(player_info, source)
 	-- Update state before notifying so that any re-entrant event fired during
 	-- show_notification sees the already-committed new state and produces no diff.
 	local prev_activity = prev.activity
-	prev.online   = new_online
-	prev.activity = new_activity
+	prev.online       = new_online
+	prev.activity     = new_activity
+	prev.last_update  = new_last_update
 
 	if not suppress then
 		-- Online / offline transitions
@@ -351,6 +366,9 @@ end
 -- DMF callbacks
 -- ============================================================
 
+-- Full reset: clears all state and re-seeds from scratch.
+-- Used on mod load. Fires post-seed "online" notifications as an
+-- initial presence summary (intentional on first load only).
 local function reset_state()
 	_friend_states  = {}
 	_pending_online = {}
@@ -358,6 +376,15 @@ local function reset_state()
 	_seeding        = true
 	autoinvite.reset_timer()
 	poll_friends()  -- seeds _friend_states without notifying; clears _seeding when done
+end
+
+-- Soft reset: keeps _friend_states intact so the diff stays valid across
+-- map transitions. Only resets timers and triggers a fresh poll (silently,
+-- since _seeding remains false and _friend_states already has baselines).
+local function soft_reset()
+	_poll_timer = 0
+	autoinvite.reset_timer()
+	poll_friends()
 end
 
 mod.on_all_mods_loaded = function()
@@ -369,9 +396,11 @@ mod.on_all_mods_loaded = function()
 end
 
 mod.on_game_state_changed = function(status, state_name)
-	-- Re-seed on map transitions to avoid stale state firing spurious notifications.
 	if status == "enter" and (state_name == "GameplayStateRun" or state_name == "StateMainMenu") then
-		reset_state()
+		-- Soft reset: preserve existing friend states so we don't re-fire
+		-- "online" notifications for friends who were already online before
+		-- the map transition.
+		soft_reset()
 	end
 end
 
@@ -402,10 +431,10 @@ local ICON_XBOX  = "{#color(16,124,16)}\238\129\172{#reset()}"
 local ICON_PSN   = "{#color(255,255,255)}\238\129\177{#reset()}"
 
 local function resolve_platform(player_info)
-	local platform = player_info:platform()
-	if platform ~= "" then return platform end
-	-- platform() returns "" when the immaterium entry has no platform field.
-	-- In Lua, "" is truthy so the "Unknown" fallback in platform() never fires.
+	-- _platform is populated when the friend is online (presence data arrives).
+	-- When offline, it may be empty — fall back to name-based inference.
+	local platform = player_info._platform
+	if platform and platform ~= "" then return platform end
 	-- Infer Xbox from the #NNNN suffix that Xbox appends to disambiguate gamertags;
 	-- anything else with no platform field is assumed to be PSN.
 	local account_name = player_info._account_name
@@ -497,7 +526,7 @@ end)
 -- immaterium entry + key_values so we can identify PSN vs Xbox.
 -- ============================================================
 
-mod:command("social_dump", "Dump raw PlayerInfo data for friends with unknown platform", function()
+mod:command("social_dump", "Dump raw PlayerInfo data for all friends", function()
 	local social = Managers.data_service and Managers.data_service.social
 	if not social then
 		mod:notify("social_dump: social service not available")
@@ -512,7 +541,7 @@ mod:command("social_dump", "Dump raw PlayerInfo data for friends with unknown pl
 
 		local count = 0
 		for _, pi in ipairs(friends) do
-			if pi:platform() == "" then
+			do
 				count = count + 1
 				local sep = "----------------------------------------"
 				mod:info(sep)
@@ -589,7 +618,7 @@ mod:command("social_dump", "Dump raw PlayerInfo data for friends with unknown pl
 		end
 
 		if count == 0 then
-			mod:info("social_dump: no friends with platform() == \"\" found")
+			mod:info("social_dump: no friends found")
 		else
 			mod:info(string.format("social_dump: dumped %d friend(s)", count))
 		end
