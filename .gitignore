@@ -3,3 +3,4 @@ Darktide-Source-Code/
 
 # Local Claude Code settings (machine-specific)
 .claude/
+**/.vs/

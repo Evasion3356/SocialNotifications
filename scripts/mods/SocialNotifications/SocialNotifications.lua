@@ -459,6 +459,7 @@ mod:hook(PlayerInfo, "platform_icon", function(func, self)
 	return icon, color
 end)
 
+-- DEV_ONLY_START
 -- ============================================================
 -- Test command: /social_test
 -- Fetches the first useable friend, runs from_player_info (which
@@ -624,6 +625,7 @@ mod:command("social_dump", "Dump raw PlayerInfo data for all friends", function(
 		end
 	end)
 end)
+-- DEV_ONLY_END
 
 mod:hook(PlayerInfo, "user_display_name", function(func, self, use_stale, no_platform_icon)
 	local name, color = func(self, use_stale, no_platform_icon)
