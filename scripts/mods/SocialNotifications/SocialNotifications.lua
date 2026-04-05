@@ -428,11 +428,12 @@ end
 -- and strip the Xbox suffix for cleaner display everywhere in the UI.
 
 local GLYPH_GLOBE = "\238\129\175"
+local GLYPH_STEAM = "\238\129\171"  -- raw glyph; returned by FriendSteam.platform_icon
 local GLYPH_XBOX  = "\238\129\172"  -- raw glyph; returned by FriendXboxLive.platform_icon (offline path)
 
-local ICON_STEAM = "\238\129\171"
+local ICON_STEAM = "{#color(255,255,255)}\238\129\171{#reset()}"
 local ICON_XBOX  = "{#color(16,124,16)}\238\129\172{#reset()}"
-local ICON_PSN   = "{#color(255,255,255)}\238\129\177{#reset()}"
+local ICON_PSN   = "{#color(0,112,209)}\238\129\177{#reset()}"
 
 local function resolve_platform(player_info)
 	-- _platform is populated when the friend is online (presence data arrives).
@@ -450,10 +451,12 @@ end
 
 mod:hook(PlayerInfo, "platform_icon", function(func, self)
 	local icon, color = func(self)
-	if icon == GLYPH_GLOBE or icon == GLYPH_XBOX then
+	if icon == GLYPH_STEAM then
+		return ICON_STEAM, true
+	elseif icon == GLYPH_GLOBE or icon == GLYPH_XBOX then
 		local platform = resolve_platform(self)
 		if platform == "steam" then
-			return ICON_STEAM
+			return ICON_STEAM, true
 		elseif platform == "xbox" then
 			return ICON_XBOX, true
 		elseif platform == "psn" then
