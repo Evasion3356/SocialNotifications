@@ -132,6 +132,8 @@ Relevant events:
 
 **Diff + notify** — `process_friend(player_info)` diffs `online_status` and `player_activity_id` against cached state and triggers `event_add_notification_message` with type `"custom"`. Notifications show the friend's name as the header (line 1) and status as the body (line 2), with a color-coded left accent bar per event type.
 
+> **WARNING — `line_2` does not render in-game.** The notification widget ignores the `line_2` field entirely. All text that must appear in the notification (character name, account name, status) must be packed into `line_1`, using `"\n"` as a separator. Do not attempt to move the account name (or any other text) from `line_1` to `line_2`.
+
 **Color scheme** (`NOTIF_COLORS`):
 - Online: green `{100, 220, 120}`
 - Offline: gray `{130, 130, 130}`
