@@ -508,7 +508,12 @@ mod:hook(PlayerInfo, "platform_icon", function(func, self)
 	local icon, color = func(self)
 	if icon == GLYPH_STEAM then
 		return ICON_STEAM, true
-	elseif icon == GLYPH_GLOBE or icon == GLYPH_XBOX then
+	elseif icon == GLYPH_XBOX then
+		-- Original function already identified this as Xbox (offline path for FriendXboxLive);
+		-- trust it directly. Do NOT call resolve_platform here — on Xbox clients the
+		-- gamertag has no #NNNN suffix, so resolve_platform would wrongly return "psn".
+		return ICON_XBOX, true
+	elseif icon == GLYPH_GLOBE then
 		local platform = resolve_platform(self)
 		if platform == "steam" then
 			return ICON_STEAM, true

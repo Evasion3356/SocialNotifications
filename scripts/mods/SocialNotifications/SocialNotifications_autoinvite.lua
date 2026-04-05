@@ -6,7 +6,7 @@ local SocialPopup      = mod:original_require("scripts/ui/view_elements/view_ele
 local OnlineStatus = SocialConstants.OnlineStatus
 local PartyStatus  = SocialConstants.PartyStatus
 
-local ACTIVITY_MISSION = "mission"
+local ACTIVITY_HUB = "hub"
 
 -- ============================================================
 -- Watched set
@@ -63,8 +63,8 @@ local function run_auto_invite()
 
 		elseif online_status == OnlineStatus.offline
 			or online_status == OnlineStatus.platform_online
-			or activity_id == ACTIVITY_MISSION then
-			-- "wait" status: offline, not in-game, or mid-mission
+			or activity_id ~= ACTIVITY_HUB then
+			-- wait: not on the Mourningstar
 
 		elseif party_status == PartyStatus.invite_pending then
 			-- Invite already sent, don't spam
