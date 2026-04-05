@@ -51,15 +51,15 @@ return {
 		en = "went offline",
 	},
 	notif_mission_body = {
-		en = "entered a mission",
+		en = "started a mission",
 	},
 	notif_mission_end_body = {
-		en = "left a mission",
+		en = "completed a mission",
 	},
 	notif_matchmaking_body = {
-		en = "is looking for a mission",
+		en = "started matchmaking",
 	},
 	notif_hub_body = {
-		en = "returned to the Mourningstar",
+		en = "is on the Mourningstar",
 	},
 }

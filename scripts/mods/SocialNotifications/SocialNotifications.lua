@@ -40,6 +40,7 @@ local _poll_timer        = 0
 local _events_registered = false
 local _seeding           = false  -- true while the initial seed poll is in-flight
 local _pending_online    = {}   -- [account_id] = { name, deadline } — online notifications deferred until character profile arrives
+local _in_gameplay       = false  -- true only while GameplayStateRun is active (HUD is available)
 
 -- ============================================================
 -- Hook: extend "custom" notification type to support player portraits.
@@ -278,8 +279,9 @@ local function poll_friends()
 
 		-- After the seed poll: queue "came online" notifications for every friend who
 		-- was already online when the mod loaded. We stayed silent during seeding to
-		-- avoid false positives on startup; now surface them via the deferred path so
-		-- we wait for the character profile before showing the notification.
+		-- avoid false positives on startup; now surface them via the deferred path.
+		-- Always defer here (never notify immediately) — the HUD may not exist yet.
+		-- The flush loop below will fire them once _in_gameplay is true.
 		if was_seeding then
 			for account_id, state in pairs(_friend_states) do
 				if state.online and not _pending_online[account_id] and mod:get("notify_online") then
@@ -288,13 +290,8 @@ local function poll_friends()
 						local suppress = mod:get("skip_platform_friends")
 							and pi:platform_friend_status() == FriendStatus.friend
 						if not suppress then
-							if pi:character_name() ~= "" then
-								mod:info("[SN:%s] NOTIFY online (post-seed, profile ready)", account_id:sub(-6))
-								show_notification(pi, mod:localize("notif_online_body"), NOTIF_COLORS.online)
-							else
-								mod:info("[SN:%s] online deferred post-seed (no profile yet)", account_id:sub(-6))
-								_pending_online[account_id] = { deadline = now + 6 }
-							end
+							mod:info("[SN:%s] online deferred post-seed (waiting for HUD)", account_id:sub(-6))
+							_pending_online[account_id] = { deadline = now + 120 }
 						end
 					end
 				end
@@ -302,16 +299,18 @@ local function poll_friends()
 		end
 
 		-- Every poll: flush pending notifications where the character profile has now arrived.
-		-- This is the fallback for friends who never trigger another presence event
-		-- (e.g. someone who stays in a mission without any state change).
-		for account_id, pending in pairs(_pending_online) do
-			local pi = social:get_player_info_by_account_id(account_id)
-			if pi then
-				if pi:character_name() ~= "" or now >= pending.deadline then
-					_pending_online[account_id] = nil
-					if mod:get("notify_online") then
-						mod:info("[SN:%s] NOTIFY online (poll flush, char=%s)", account_id:sub(-6), tostring(pi:character_name() ~= ""))
-						show_notification(pi, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+		-- Only flush when _in_gameplay is true (GameplayStateRun active) — the HUD
+		-- notification feed is not available during earlier states (loading, char select).
+		if _in_gameplay then
+			for account_id, pending in pairs(_pending_online) do
+				local pi = social:get_player_info_by_account_id(account_id)
+				if pi then
+					if pi:character_name() ~= "" or now >= pending.deadline then
+						_pending_online[account_id] = nil
+						if mod:get("notify_online") then
+							mod:info("[SN:%s] NOTIFY online (poll flush, char=%s)", account_id:sub(-6), tostring(pi:character_name() ~= ""))
+							show_notification(pi, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+						end
 					end
 				end
 			end
@@ -343,8 +342,9 @@ mod._on_immaterium_entry = function(self, new_entry)
 	-- Flush a deferred online notification now that a new presence update arrived.
 	-- The character profile typically lands in the second update, a few seconds after
 	-- the status-change update that first triggered the "came online" detection.
+	-- Only flush when the HUD is available (_in_gameplay); otherwise keep deferring.
 	local pending = _pending_online[account_id]
-	if pending and player_info:is_friend() then
+	if pending and _in_gameplay and player_info:is_friend() then
 		local char_name = player_info:character_name()
 		local now = Managers.time and Managers.time:time("main") or 0
 		if char_name ~= "" or now >= pending.deadline then
@@ -374,6 +374,7 @@ local function reset_state()
 	_pending_online = {}
 	_poll_timer     = 0
 	_seeding        = true
+	_in_gameplay    = false
 	autoinvite.reset_timer()
 	poll_friends()  -- seeds _friend_states without notifying; clears _seeding when done
 end
@@ -396,6 +397,9 @@ mod.on_all_mods_loaded = function()
 end
 
 mod.on_game_state_changed = function(status, state_name)
+	if state_name == "GameplayStateRun" then
+		_in_gameplay = (status == "enter")
+	end
 	if status == "enter" and (state_name == "GameplayStateRun" or state_name == "StateMainMenu") then
 		-- Soft reset: preserve existing friend states so we don't re-fire
 		-- "online" notifications for friends who were already online before
