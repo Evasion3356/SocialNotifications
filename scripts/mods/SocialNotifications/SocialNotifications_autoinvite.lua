@@ -1,7 +1,6 @@
 local mod = get_mod("SocialNotifications")
 
 local SocialConstants  = mod:original_require("scripts/managers/data_service/services/social/social_constants")
-local ContentList      = mod:original_require("scripts/ui/view_elements/view_element_player_social_popup/view_element_player_social_popup_content_list")
 local SocialPopup      = mod:original_require("scripts/ui/view_elements/view_element_player_social_popup/view_element_player_social_popup")
 
 local OnlineStatus = SocialConstants.OnlineStatus
@@ -89,54 +88,44 @@ end
 -- can directly mutate _menu_widgets[1].content.text in-place.
 -- ============================================================
 
-local _current_popup = nil
-
 mod:hook(SocialPopup, "set_player_info", function(original, self, parent, player_info)
-	_current_popup = self
+	mod._current_social_popup = self
 	return original(self, parent, player_info)
 end)
 
 -- ============================================================
--- Hook: inject "Auto-invite" checkbox into the social popup menu.
---
--- ViewElementPlayerSocialPopupContentList.from_player_info builds
--- the action list for the social popup (same menu as "Invite to
--- Strike Team").  It returns a reference to the shared _popup_menu_items
--- table plus the item count.  We prepend our toggle + divider so it
--- appears at the top of the menu.
---
--- Key fix: use platform_user_id(), not account_id().  Steam friends
--- who are not currently in Darktide have no account_id (Fatshark
--- backend ID only), but always have a platform_user_id (Steam ID).
+-- Module interface
 -- ============================================================
 
-mod:hook(ContentList, "from_player_info", function(original, parent, player_info)
-	local items, count = original(parent, player_info)
+local AutoInvite = {}
 
+-- Inject "Auto-invite" toggle into the social popup item list.
+-- Called from the single combined from_player_info hook in SocialNotifications.lua.
+-- Prepends button + divider so the toggle appears at the top of the menu.
+-- Key: use platform_user_id(), not account_id() — Steam friends who are offline
+-- have no account_id but always have a platform_user_id.
+AutoInvite.inject_items = function(items, count, player_info)
 	if player_info:is_own_player() or player_info:is_blocked() then
 		return items, count
 	end
 
 	local puid = player_info:platform_user_id()
-
 	if not puid or puid == "" then
 		return items, count
 	end
 
 	-- Prepend: button at position 1, divider at position 2.
 	-- table.insert shifts all existing entries down.
-	local watching = is_watching(player_info)
-
 	table.insert(items, 1, {
 		blueprint = "button",
-		label     = watching
+		label     = is_watching(player_info)
 			and mod:localize("auto_invite_on")
 			or  mod:localize("auto_invite_off"),
 		callback  = function()
 			toggle_watch(player_info)
 			-- Update the button label in-place: our button is always at index 1.
 			-- Avoids the full fade-out/rebuild/fade-in cycle.
-			local widgets = _current_popup and _current_popup._menu_widgets
+			local widgets = mod._current_social_popup and mod._current_social_popup._menu_widgets
 			if widgets and widgets[1] then
 				widgets[1].content.text = is_watching(player_info)
 					and mod:localize("auto_invite_on")
@@ -151,15 +140,8 @@ mod:hook(ContentList, "from_player_info", function(original, parent, player_info
 	})
 
 	count = count + 2
-
 	return items, count
-end)
-
--- ============================================================
--- Module interface
--- ============================================================
-
-local AutoInvite = {}
+end
 
 AutoInvite.update = function(dt)
 	local interval = mod:get("auto_invite_interval") or 30

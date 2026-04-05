@@ -4,9 +4,20 @@ local SocialConstants = mod:original_require("scripts/managers/data_service/serv
 local PlayerInfo      = mod:original_require("scripts/managers/data_service/services/social/player_info")
 local UISettings      = mod:original_require("scripts/settings/ui/ui_settings")
 local NotifFeed       = mod:original_require("scripts/ui/constant_elements/elements/notification_feed/constant_element_notification_feed")
+local ContentList     = mod:original_require("scripts/ui/view_elements/view_element_player_social_popup/view_element_player_social_popup_content_list")
 local FriendStatus    = SocialConstants.FriendStatus
 
 local autoinvite = mod:io_dofile("SocialNotifications/scripts/mods/SocialNotifications/SocialNotifications_autoinvite")
+local allowlist  = mod:io_dofile("SocialNotifications/scripts/mods/SocialNotifications/SocialNotifications_allowlist")
+
+-- Single combined hook: both sub-modules expose inject_items() so only one
+-- hook registration is needed, avoiding DMF's "rehook" warning.
+mod:hook(ContentList, "from_player_info", function(original, parent, player_info)
+	local items, count = original(parent, player_info)
+	items, count = autoinvite.inject_items(items, count, player_info)
+	items, count = allowlist.inject_items(items, count, player_info)
+	return items, count
+end)
 
 -- ============================================================
 -- Constants
@@ -134,6 +145,22 @@ local function show_notification(player_info, body, colors)
 end
 
 -- ============================================================
+-- Suppression logic
+-- ============================================================
+
+-- Returns true if notifications for this friend should be silenced.
+-- When use_notification_allowlist is ON: suppress everyone not on the
+-- allowlist (the allowlist overrides skip_platform_friends).
+-- When OFF: fall back to the skip_platform_friends setting.
+local function should_suppress(player_info)
+	if mod:get("use_notification_allowlist") then
+		return not allowlist.is_allowlisted(player_info)
+	end
+	return mod:get("skip_platform_friends")
+		and player_info:platform_friend_status() == FriendStatus.friend
+end
+
+-- ============================================================
 -- Core: diff one friend, fire notifications on changes
 -- ============================================================
 
@@ -162,8 +189,7 @@ local function process_friend(player_info, source)
 			short_id, source or "?", tostring(new_online), tostring(new_activity), tostring(_seeding))
 		_friend_states[account_id] = { online = new_online, activity = new_activity, last_update = new_last_update }
 		if not _seeding and new_online and mod:get("notify_online") then
-			local suppress = mod:get("skip_platform_friends")
-				and player_info:platform_friend_status() == FriendStatus.friend
+			local suppress = should_suppress(player_info)
 			if not suppress then
 				if player_info:character_name() == "" then
 					mod:info("[SN:%s] first-sight online deferred (no character profile yet)", short_id)
@@ -197,12 +223,8 @@ local function process_friend(player_info, source)
 			tostring(prev.last_update), tostring(new_last_update))
 	end
 
-	-- When skip_platform_friends is on (default), suppress notifications for
-	-- friends who are already on the platform friends list (Steam/Xbox/PSN).
-	-- Their client handles online/offline notifications natively.
-	-- State is still updated so toggling the setting mid-session stays clean.
-	local suppress = mod:get("skip_platform_friends")
-		and player_info:platform_friend_status() == FriendStatus.friend
+	-- State is always updated so toggling suppress settings mid-session stays clean.
+	local suppress = should_suppress(player_info)
 
 	-- Update state before notifying so that any re-entrant event fired during
 	-- show_notification sees the already-committed new state and produces no diff.
@@ -287,8 +309,7 @@ local function poll_friends()
 				if state.online and not _pending_online[account_id] and mod:get("notify_online") then
 					local pi = social:get_player_info_by_account_id(account_id)
 					if pi and pi:is_friend() then
-						local suppress = mod:get("skip_platform_friends")
-							and pi:platform_friend_status() == FriendStatus.friend
+						local suppress = should_suppress(pi)
 						if not suppress then
 							mod:info("[SN:%s] online deferred post-seed (waiting for HUD)", account_id:sub(-6))
 							_pending_online[account_id] = { deadline = now + 120 }

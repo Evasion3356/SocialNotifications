@@ -28,11 +28,22 @@ return {
 	skip_platform_friends = {
 		en = "Skip platform friends (Steam/Xbox/PSN)",
 	},
+	use_notification_allowlist = {
+		en = "Notification allowlist (only notify allowlisted friends)",
+	},
 	auto_invite_interval = {
 		en = "Auto-invite check interval (seconds)",
 	},
 	poll_interval = {
 		en = "Poll interval (seconds)",
+	},
+
+	-- Allowlist popup toggle labels
+	allowlist_on = {
+		en = "[✓] Notify me",
+	},
+	allowlist_off = {
+		en = "[X] Notify me",
 	},
 
 	-- Auto-invite popup toggle labels

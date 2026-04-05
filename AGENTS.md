@@ -14,10 +14,12 @@ SocialNotifications/
 ├── CLAUDE.md                              ← points to AGENTS.md
 ├── GOAL.md                                ← design goals, API details, open work
 ├── SocialNotifications.mod                ← DMF entry point (loaded by the game)
+├── notification_allowlist.lua             ← persisted allowlist data (written at runtime)
 ├── Darktide-Source-Code/                  ← game source reference — READ ONLY, never modify
 └── scripts/mods/SocialNotifications/
     ├── SocialNotifications.lua            ← main mod (poll loop, event handler, reset)
     ├── SocialNotifications_autoinvite.lua ← auto-invite loop + social popup hook
+    ├── SocialNotifications_allowlist.lua  ← per-friend notification allowlist
     ├── SocialNotifications_data.lua       ← DMF mod metadata + settings widgets
     └── SocialNotifications_localization.lua
 ```
@@ -149,9 +151,21 @@ Loaded via `mod:io_dofile(...)` at the top of `SocialNotifications.lua`. Two res
 
 **Loop** — `AutoInvite.update(dt)` runs every `auto_invite_interval` seconds. For each `_watched[account_id]`: if `PartyStatus.mine` → remove (accepted); if offline / `platform_online` / `activity == "mission"` / `invite_pending` → skip; otherwise call `can_invite_to_party` and `send_party_invite` if allowed.
 
-**Hook** — `mod:hook(ContentList, "from_player_info", ...)` appends a divider + `[ON]/[OFF] Auto-invite to Strike Team` button to the social popup. Toggling calls `toggle_watch(account_id)`. The watched list is preserved across map transitions (user intent). `AutoInvite.reset_timer()` resets only the interval timer.
+**inject_items** — `AutoInvite.inject_items(items, count, player_info)` prepends a divider + `[ON]/[OFF] Auto-invite to Strike Team` button to the social popup item list. Called from the single combined `from_player_info` hook in `SocialNotifications.lua`. Toggling calls `toggle_watch(account_id)`. The watched list is preserved across map transitions (user intent). `AutoInvite.reset_timer()` resets only the interval timer.
 
 **skip_platform_friends does NOT affect auto-invite** — the user explicitly set the checkbox, so platform friendship is irrelevant.
+
+### Notification allowlist (`SocialNotifications_allowlist.lua`)
+Loaded via `mod:io_dofile(...)` at the top of `SocialNotifications.lua`.
+
+**Persistence** — uses `mod:persistent_table("notification_allowlist")` as the in-memory store (keyed by `platform_user_id`). On load, also reads `notification_allowlist.lua` next to the mod directory via the real `io` library captured from `Mods.lua.io`. On toggle, writes the same file back as a plain Lua table.
+
+**inject_items** — `Allowlist.inject_items(items, count, player_info)` inserts a `[✓]/[X] Notify me` button at position 2 in the popup (between the auto-invite button and its divider). Only active when `use_notification_allowlist` is enabled.
+
+**Suppression** — `should_suppress(player_info)` in `SocialNotifications.lua` checks `use_notification_allowlist` first: if on, suppresses everyone not on the allowlist (overrides `skip_platform_friends`); if off, falls back to the `skip_platform_friends` setting.
+
+### Combined popup hook
+A single `mod:hook(ContentList, "from_player_info", ...)` in `SocialNotifications.lua` calls both `autoinvite.inject_items` and `allowlist.inject_items` in sequence, avoiding DMF's "rehook" warning.
 
 ## Planned work (see GOAL.md for detail)
 
