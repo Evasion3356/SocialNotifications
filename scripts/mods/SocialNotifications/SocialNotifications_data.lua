@@ -15,7 +15,7 @@ return {
 			{
 				setting_id    = "notify_offline",
 				type          = "checkbox",
-				default_value = true,
+				default_value = false,
 			},
 			{
 				setting_id    = "notify_mission_start",
@@ -35,7 +35,12 @@ return {
 			{
 				setting_id    = "notify_hub",
 				type          = "checkbox",
-				default_value = false,
+				default_value = true,
+			},
+			{
+				setting_id    = "skip_party_members",
+				type          = "checkbox",
+				default_value = true,
 			},
 			{
 				setting_id    = "skip_platform_friends",
@@ -50,7 +55,7 @@ return {
 			{
 				setting_id    = "auto_invite_interval",
 				type          = "numeric",
-				default_value = 30,
+				default_value = 15,
 				range         = { 10, 120 },
 			},
 			{

@@ -6,6 +6,7 @@ local UISettings      = mod:original_require("scripts/settings/ui/ui_settings")
 local NotifFeed       = mod:original_require("scripts/ui/constant_elements/elements/notification_feed/constant_element_notification_feed")
 local ContentList     = mod:original_require("scripts/ui/view_elements/view_element_player_social_popup/view_element_player_social_popup_content_list")
 local FriendStatus    = SocialConstants.FriendStatus
+local PartyStatus     = SocialConstants.PartyStatus
 
 local autoinvite = mod:io_dofile("SocialNotifications/scripts/mods/SocialNotifications/SocialNotifications_autoinvite")
 local allowlist  = mod:io_dofile("SocialNotifications/scripts/mods/SocialNotifications/SocialNotifications_allowlist")
@@ -50,6 +51,7 @@ local _friend_states     = {}   -- [account_id] = { online, activity }
 local _poll_timer        = 0
 local _events_registered = false
 local _seeding           = false  -- true while the initial seed poll is in-flight
+local _initial_seed      = false  -- true only for the very first seed after on_all_mods_loaded; gates post-seed online summary
 local _pending_online    = {}   -- [account_id] = { name, deadline } — online notifications deferred until character profile arrives
 local _in_gameplay       = false  -- true only while GameplayStateRun is active (HUD is available)
 
@@ -153,6 +155,9 @@ end
 -- allowlist (the allowlist overrides skip_platform_friends).
 -- When OFF: fall back to the skip_platform_friends setting.
 local function should_suppress(player_info)
+	if mod:get("skip_party_members") and player_info:party_status() == PartyStatus.mine then
+		return true
+	end
 	if mod:get("use_notification_allowlist") then
 		return not allowlist.is_allowlisted(player_info)
 	end
@@ -213,7 +218,11 @@ local function process_friend(player_info, source)
 	end
 
 	local online_changed   = new_online ~= prev.online
-	local activity_changed = new_online and new_activity ~= prev.activity
+	-- Only fire activity notifications when the friend was already online before
+	-- this update.  Guarding on prev.online prevents a spurious hub/mission
+	-- notification from firing alongside the "came online" notification when a
+	-- friend first appears with an activity already set.
+	local activity_changed = new_online and prev.online and new_activity ~= prev.activity
 
 	if online_changed or activity_changed then
 		mod:info("[SN:%s] diff via %s — online %s->%s  activity %s->%s (last_update %s->%s)",
@@ -299,12 +308,14 @@ local function poll_friends()
 
 		local now = Managers.time and Managers.time:time("main") or 0
 
-		-- After the seed poll: queue "came online" notifications for every friend who
-		-- was already online when the mod loaded. We stayed silent during seeding to
-		-- avoid false positives on startup; now surface them via the deferred path.
-		-- Always defer here (never notify immediately) — the HUD may not exist yet.
-		-- The flush loop below will fire them once _in_gameplay is true.
-		if was_seeding then
+		-- After the INITIAL seed poll: queue "came online" notifications for every friend
+		-- who was already online when the mod first loaded. Stays silent during seeding
+		-- to avoid false positives on startup; surfaces them via the deferred path once
+		-- _in_gameplay is true. Only runs for the first seed (on_all_mods_loaded), NOT
+		-- for re-seeds triggered by map transitions — those would fire spurious online
+		-- notifications for friends who are already known-online mid-session.
+		if was_seeding and _initial_seed then
+			_initial_seed = false
 			for account_id, state in pairs(_friend_states) do
 				if state.online and not _pending_online[account_id] and mod:get("notify_online") then
 					local pi = social:get_player_info_by_account_id(account_id)
@@ -395,6 +406,7 @@ local function reset_state()
 	_pending_online = {}
 	_poll_timer     = 0
 	_seeding        = true
+	_initial_seed   = true
 	_in_gameplay    = false
 	autoinvite.reset_timer()
 	poll_friends()  -- seeds _friend_states without notifying; clears _seeding when done
@@ -409,9 +421,22 @@ local function soft_reset()
 	poll_friends()
 end
 
+mod._on_party_invite_canceled = function(self, ...)
+	autoinvite.on_party_invite_canceled(...)
+end
+
+mod.on_unload = function()
+	if Managers.event then
+		Managers.event:unregister(mod, "event_new_immaterium_entry")
+		Managers.event:unregister(mod, "party_immaterium_invite_canceled")
+	end
+	_events_registered = false
+end
+
 mod.on_all_mods_loaded = function()
 	if not _events_registered then
 		Managers.event:register(mod, "event_new_immaterium_entry", "_on_immaterium_entry")
+		Managers.event:register(mod, "party_immaterium_invite_canceled", "_on_party_invite_canceled")
 		_events_registered = true
 	end
 	reset_state()
@@ -420,11 +445,20 @@ end
 mod.on_game_state_changed = function(status, state_name)
 	if state_name == "GameplayStateRun" then
 		_in_gameplay = (status == "enter")
+		if status == "exit" then
+			-- Clear cached states before the session teardown sends offline presence
+			-- updates for all friends in the session.  Without this, every friend who
+			-- was "online" in _friend_states gets diffed against their temporarily-offline
+			-- presence entry and fires a spurious offline notification.
+			-- soft_reset on StateMainMenu entry will re-seed from the new baseline.
+			_friend_states  = {}
+			_pending_online = {}
+			_seeding        = true
+		end
 	end
 	if status == "enter" and (state_name == "GameplayStateRun" or state_name == "StateMainMenu") then
-		-- Soft reset: preserve existing friend states so we don't re-fire
-		-- "online" notifications for friends who were already online before
-		-- the map transition.
+		-- Re-seed from the current baseline; _seeding is already true when coming
+		-- from a GameplayStateRun exit so poll_friends will be silent.
 		soft_reset()
 	end
 end

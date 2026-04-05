@@ -158,4 +158,48 @@ AutoInvite.reset_timer = function()
 	-- _watched intentionally preserved across resets
 end
 
+-- Fired by the backend when an invite is canceled/declined/timed-out.
+-- Signature: invite_token, platform, platform_user_id, inviter_account_id,
+--            canceler_account_id, answer_code
+-- The invitee declined when canceler_account_id identifies them — but the ID
+-- format differs by friend type:
+--   Fatshark-only friends: platform == "" and platform_user_id IS their account_id,
+--     so canceler_account_id == platform_user_id when they decline.
+--   Steam/Xbox/PSN friends: platform_user_id is the platform ID (e.g. Steam hex),
+--     canceler_account_id is their Fatshark account_id — different values.
+-- We handle both by accepting either match.
+AutoInvite.on_party_invite_canceled = function(invite_token, platform, platform_user_id, inviter_account_id, canceler_account_id, answer_code)
+	local my_id = Managers.backend and Managers.backend:account_id()
+	if inviter_account_id ~= my_id then return end
+
+	-- The invitee declined when canceler_account_id matches their identity.
+	-- For Fatshark-only / immaterium invites (platform == ""):
+	--   platform_user_id IS their Fatshark account_id, so canceler == puid.
+	-- For platform invites (Steam etc.):
+	--   platform_user_id is the platform hex ID; canceler is their Fatshark UUID.
+	-- Xbox invites always go through immaterium (platform == ""), so puid is the
+	-- Fatshark UUID — different from the Xbox hex ID stored as the _watched key.
+	if canceler_account_id ~= platform_user_id then return end
+
+	-- Primary lookup: direct key match (works for Steam and Fatshark-only friends).
+	local matched_puid = nil
+	if _watched[platform_user_id] then
+		matched_puid = platform_user_id
+	else
+		-- Fallback: search by Fatshark account_id (needed for Xbox, whose _watched
+		-- key is the Xbox hex ID but the event puid is the Fatshark UUID).
+		for puid, pi in pairs(_watched) do
+			if pi:account_id() == platform_user_id then
+				matched_puid = puid
+				break
+			end
+		end
+	end
+
+	if matched_puid then
+		mod:info("[SN:autoinvite] %s declined invite — removing from watch list", matched_puid:sub(-6))
+		_watched[matched_puid] = nil
+	end
+end
+
 return AutoInvite
