@@ -169,9 +169,36 @@ A single `mod:hook(ContentList, "from_player_info", ...)` in `SocialNotification
 
 ## Planned work (see GOAL.md for detail)
 
-1. **Roster-level checkbox** — visual checkbox in the friend roster row itself, not just the popup. Requires blueprint injection into `player_plaque` widget passes.
-2. **Cross-session persistence** — persist `_watched` via DMF save data.
-3. **Per-friend notification muting** — suppress presence notifications for specific friends.
+1. ~~**Event-driven auto-invite trigger**~~ — **Done.** Timer-based polling replaced entirely. Invites now fire immediately on hub arrival (via `autoinvite.on_hub_arrival` called from `process_friend`), on `toggle_watch` enable (if friend is already in hub), and on invite timeout via `on_party_invite_canceled` (resend instead of no-op). Explicit declines still remove the friend from the watch list. `auto_invite_interval` setting and all timer code removed.
+2. **Party join/leave notifications** — extend `process_friend` to diff `party_status` alongside `online_status` and `player_activity_id`. Fire a notification when a friend's status changes to `mine` ("joined your party") or from `mine` to anything else ("left your party").
+3. **Roster-level checkbox** — visual checkbox in the friend roster row itself, not just the popup. Requires injecting a new pass into `player_plaque.pass_template` before the widget definition is cached. Medium difficulty; deferred.
+
+## Release build
+
+Run `make_release.py` to produce `SocialNotifications.zip`. The script:
+- Strips all `-- DEV_ONLY_START` … `-- DEV_ONLY_END` blocks (inclusive) from every `.lua` file — this removes the `/social_test` and `/social_dump` debug commands.
+- Strips all `mod:info(...)` calls (including multi-line ones).
+- Packages `SocialNotifications.mod` and the full `scripts/` tree into the zip.
+
+## Platform icon handling & who_are_you compatibility
+
+The mod hooks `PlayerInfo.platform_icon` to fix two things:
+
+1. **Coloring** — vanilla returns plain glyphs (white Steam, raw Xbox, raw PSN). The hook wraps them in `{#color(...)}` rich-text so they render with platform colors (white Steam, green Xbox, blue PSN) everywhere the social service exposes display names: the social page, the lobby, who_are_you nameplates, and our own notifications.
+
+2. **Globe resolution** — for cross-platform friends the vanilla code (and the who_are_you `hook_origin` on `PresenceEntryImmaterium.platform_icon`) returns `GLYPH_GLOBE` when `_immaterium_entry.platform` is empty (offline friends, hub players whose presence entry hasn't populated yet). Our `PlayerInfo.platform_icon` hook sits one level above and resolves the globe to the actual platform glyph via `resolve_platform(self)`, which checks `self._platform` first then falls back to inferring Xbox from the `#NNNN` gamertag suffix.
+
+**Why hook at `PlayerInfo` rather than `PresenceEntryImmaterium`?**  
+who_are_you uses `mod:hook_origin("PresenceEntryImmaterium", "platform_icon", ...)` which completely replaces that method and ignores the `in_platform` fallback argument. Hooking at the `PlayerInfo` level lets us see the final result and correct it without fighting over the lower-level hook.
+
+**Why return colored rich-text (not raw glyphs)?**  
+All UI contexts that display `user_display_name()` output (who_are_you nameplates, lobby panels, chat, inventory) use widget content fields that render DMF/game rich-text markup. Returning colored strings here makes the icons colored everywhere. The one concern — who_are_you's `is_unknown()` stripping — is not actually affected: `is_unknown` only matters when the underlying name is `"N/A"`, and `platform_icon()` returns `nil` in that state (no presence, no platform_social), so no icon is prepended to a "N/A" name.
+
+**`colorize_platform_icon(raw_icon)`** — a local helper used only inside `show_notification`. It maps raw glyphs → colored rich-text for the notification display path. If `platform_icon()` already returned a colored string (via our hook), the helper passes it through unchanged. This keeps the notification path self-contained and testable in isolation.
+
+**Test commands** (`DEV_ONLY` — stripped from release builds):
+- `/social_test` — calls `show_notification(own_info, ...)` directly with your real `PlayerInfo`. Exercises the full real path.
+- `/social_multi_test` — fires three notifications with spoofed Steam/Xbox/PSN glyphs. Uses a Lua metatable proxy that overrides only `platform_icon()` to return the target raw glyph; all other methods delegate to the real `own_info` with the correct `self`. The DMF hook on `PlayerInfo.platform_icon` is intentionally bypassed by the proxy so `colorize_platform_icon` is tested directly.
 
 ## Coding guidelines
 

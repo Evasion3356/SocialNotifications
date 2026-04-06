@@ -72,6 +72,82 @@ mod:hook(NotifFeed, "_generate_notification_data", function(original, self, mess
 end)
 
 -- ============================================================
+-- Platform icon colorization
+-- ============================================================
+-- Applied at notification display time only, so the shared PlayerInfo.platform_icon
+-- API returns raw glyphs to other mods (e.g. who_are_you) without interference.
+
+local GLYPH_GLOBE = "\238\129\175"
+local GLYPH_STEAM = "\238\129\171"  -- raw glyph; returned by FriendSteam.platform_icon
+local GLYPH_XBOX  = "\238\129\172"  -- raw glyph; returned by FriendXboxLive.platform_icon (offline path)
+local GLYPH_PSN   = "\238\129\177"  -- raw glyph; may be returned by other mods (e.g. who_are_you hook_origin)
+
+local ICON_STEAM = "{#color(255,255,255)}\238\129\171{#reset()}"
+local ICON_XBOX  = "{#color(16,124,16)}\238\129\172{#reset()}"
+local ICON_PSN   = "{#color(0,112,209)}\238\129\177{#reset()}"
+
+local function resolve_platform(player_info)
+	-- _platform is populated when the friend is online (presence data arrives).
+	-- When offline, it may be empty — fall back to name-based inference.
+	local platform = player_info._platform
+	if platform and platform ~= "" then return platform end
+	-- Infer Xbox from the #NNNN suffix that Xbox appends to disambiguate gamertags;
+	-- anything else with no platform field is assumed to be PSN.
+	local account_name = player_info._account_name
+	if account_name and account_name:match("#%d+$") then
+		return "xbox"
+	end
+	return "psn"
+end
+
+-- Resolves a raw icon glyph to a colored rich-text string for notification display.
+local function colorize_platform_icon(raw_icon)
+	if not raw_icon or raw_icon == "" then return "" end
+	if raw_icon == GLYPH_STEAM then
+		return ICON_STEAM
+	elseif raw_icon == GLYPH_XBOX then
+		return ICON_XBOX
+	elseif raw_icon == GLYPH_PSN then
+		return ICON_PSN
+	end
+	-- Already colored (e.g. same-platform PSN from vanilla code), or unknown — pass through.
+	return raw_icon
+end
+
+-- Hook PlayerInfo.platform_icon to return colored rich-text icons globally.
+-- This fixes the social page, who_are_you display, and our own notifications.
+-- Key addition vs the original: GLYPH_GLOBE is now resolved to the friend's actual
+-- platform before colorizing, fixing offline cross-platform friends and hub players
+-- whose immaterium entry has an empty platform field (e.g. who_are_you hook_origin
+-- ignores the in_platform fallback, so those would otherwise stay as a globe).
+-- Note: when a name is truly "N/A", platform_icon() returns nil (no presence, no
+-- platform_social), so no icon is prepended and who_are_you's is_unknown() is unaffected.
+mod:hook(PlayerInfo, "platform_icon", function(func, self)
+	local icon, color = func(self)
+	if icon == GLYPH_GLOBE then
+		-- Globe means cross-platform with unresolved platform field; infer the actual
+		-- platform. Do NOT call resolve_platform for GLYPH_STEAM/GLYPH_XBOX: those are
+		-- already identified correctly by the original function, and on Xbox clients
+		-- gamertags have no #NNNN suffix so the heuristic would wrongly return "psn".
+		local platform = resolve_platform(self)
+		if platform == "steam" then
+			return ICON_STEAM, true
+		elseif platform == "xbox" then
+			return ICON_XBOX, true
+		elseif platform == "psn" then
+			return ICON_PSN, true
+		end
+	elseif icon == GLYPH_STEAM then
+		return ICON_STEAM, true
+	elseif icon == GLYPH_XBOX then
+		return ICON_XBOX, true
+	elseif icon == GLYPH_PSN then
+		return ICON_PSN, true
+	end
+	return icon, color
+end)
+
+-- ============================================================
 -- Notification display
 -- ============================================================
 
@@ -114,13 +190,16 @@ local function show_notification(player_info, body, colors)
 		local arch_icon = archetype_id and UISettings.archetype_font_icon_simple[archetype_id] or ""
 		line1 = arch_icon ~= "" and (arch_icon .. " " .. char_name) or char_name
 
-		-- Line 2: platform display name (with embedded platform icon glyph) + body
-		-- user_display_name(stale=true, no_icon=false) returns "[glyph] Name"
-		local display = player_info:user_display_name(true, false)
+		-- Line 2: colored platform icon + display name + body.
+		-- platform_icon() now returns a raw glyph (globe already resolved by our hook),
+		-- so colorize_platform_icon just maps glyph → colored rich-text for our display only.
+		local raw_icon = player_info:platform_icon()
+		local display = player_info:user_display_name(false, true)
 		if not display or display == "" or display == "N/A" then
-			display = player_info:user_display_name(true, true)
+			display = "Unknown"
 		end
-		line2 = ((display and display ~= "") and display or "Unknown") .. " " .. body
+		local icon = colorize_platform_icon(raw_icon)
+		line2 = (icon ~= "" and (icon .. " ") or "") .. display .. " " .. body
 
 		mod:info("[SN] show_notification profile dump — char=%s archetype_id=%s arch_icon=%s display=%s",
 			tostring(char_name), tostring(archetype_id), tostring(arch_icon ~= ""), tostring(display))
@@ -278,6 +357,11 @@ local function process_friend(player_info, source)
 				mod:info("[SN:%s] NOTIFY hub", short_id)
 				show_notification(player_info, mod:localize("notif_hub_body"), NOTIF_COLORS.hub)
 			end
+
+			-- Trigger auto-invite immediately on hub arrival, regardless of notification suppression.
+			if new_activity == ACTIVITY_HUB then
+				autoinvite.on_hub_arrival(player_info)
+			end
 		end
 	end
 end
@@ -408,16 +492,14 @@ local function reset_state()
 	_seeding        = true
 	_initial_seed   = true
 	_in_gameplay    = false
-	autoinvite.reset_timer()
 	poll_friends()  -- seeds _friend_states without notifying; clears _seeding when done
 end
 
 -- Soft reset: keeps _friend_states intact so the diff stays valid across
--- map transitions. Only resets timers and triggers a fresh poll (silently,
+-- map transitions. Only resets the poll timer and triggers a fresh poll (silently,
 -- since _seeding remains false and _friend_states already has baselines).
 local function soft_reset()
 	_poll_timer = 0
-	autoinvite.reset_timer()
 	poll_friends()
 end
 
@@ -470,120 +552,78 @@ mod.update = function(dt)
 		_poll_timer = 0
 		poll_friends()
 	end
-
-	autoinvite.update(dt)
 end
 
 -- ============================================================
 -- Cross-platform display fixes
 -- ============================================================
--- The game shows a globe icon for friends on a different platform,
--- and stores Xbox gamertags with a "#NNNN" suffix (e.g. "SafePunjabi#3244").
--- These hooks replace the globe with the friend's actual platform icon
--- and strip the Xbox suffix for cleaner display everywhere in the UI.
-
-local GLYPH_GLOBE = "\238\129\175"
-local GLYPH_STEAM = "\238\129\171"  -- raw glyph; returned by FriendSteam.platform_icon
-local GLYPH_XBOX  = "\238\129\172"  -- raw glyph; returned by FriendXboxLive.platform_icon (offline path)
-
-local ICON_STEAM = "{#color(255,255,255)}\238\129\171{#reset()}"
-local ICON_XBOX  = "{#color(16,124,16)}\238\129\172{#reset()}"
-local ICON_PSN   = "{#color(0,112,209)}\238\129\177{#reset()}"
-
-local function resolve_platform(player_info)
-	-- _platform is populated when the friend is online (presence data arrives).
-	-- When offline, it may be empty — fall back to name-based inference.
-	local platform = player_info._platform
-	if platform and platform ~= "" then return platform end
-	-- Infer Xbox from the #NNNN suffix that Xbox appends to disambiguate gamertags;
-	-- anything else with no platform field is assumed to be PSN.
-	local account_name = player_info._account_name
-	if account_name and account_name:match("#%d+$") then
-		return "xbox"
-	end
-	return "psn"
-end
-
-mod:hook(PlayerInfo, "platform_icon", function(func, self)
-	local icon, color = func(self)
-	if icon == GLYPH_STEAM then
-		return ICON_STEAM, true
-	elseif icon == GLYPH_XBOX then
-		-- Original function already identified this as Xbox (offline path for FriendXboxLive);
-		-- trust it directly. Do NOT call resolve_platform here — on Xbox clients the
-		-- gamertag has no #NNNN suffix, so resolve_platform would wrongly return "psn".
-		return ICON_XBOX, true
-	elseif icon == GLYPH_GLOBE then
-		local platform = resolve_platform(self)
-		if platform == "steam" then
-			return ICON_STEAM, true
-		elseif platform == "xbox" then
-			return ICON_XBOX, true
-		elseif platform == "psn" then
-			return ICON_PSN, true
-		end
-	end
-	return icon, color
-end)
+-- The game stores Xbox gamertags with a "#NNNN" suffix (e.g. "SafePunjabi#3244").
+-- The hook below strips that suffix from user_display_name for cleaner display.
 
 -- DEV_ONLY_START
 -- ============================================================
--- Test command: /social_test
--- Fetches the first useable friend, runs from_player_info (which
--- triggers the autoinvite hook), and prints every popup item label
--- so we can verify the injection without opening the real UI.
+-- Test commands: /social_test, /social_multi_test
+-- Both call show_notification() directly so they exercise the real
+-- notification path rather than duplicating its logic.
 -- ============================================================
 
-mod:command("social_test", "Fire a test 'online' notification using the local player's portrait and character data", function()
+local function _get_own_info()
 	local local_player = Managers.player and Managers.player:local_player(1)
-	if not local_player then
-		mod:notify("social_test: local player not available")
-		return
-	end
-
-	local profile = local_player:profile()
-	if not profile then
-		mod:notify("social_test: profile not loaded")
-		return
-	end
-
-	-- Line 1: class glyph + character name
-	local archetype_name = local_player:archetype_name()
-	local archetype_icon = archetype_name and UISettings.archetype_font_icon_simple[archetype_name] or ""
-	local char_name      = profile.name or "Unknown"
-	local line_1         = (archetype_icon ~= "" and (archetype_icon .. " ") or "") .. char_name
-
-	-- Line 2: platform display name + status
-	-- Look up our own player_info from the social service to get the account (Steam) name.
-	local account_name = char_name
+	if not local_player then return nil, "local player not available" end
 	local social = Managers.data_service and Managers.data_service.social
-	if social then
-		local own_info = social:get_player_info_by_account_id(local_player:account_id())
-		if own_info then
-			local display = own_info:user_display_name(true, true)
-			if display and display ~= "" and display ~= "N/A" then
-				account_name = display
-			end
-		end
-	end
-	local account_display = account_name .. " " .. mod:localize("notif_online_body")
-	local combined = line_1 .. "\n" .. account_display
+	if not social then return nil, "social service not available" end
+	local own_info = social:get_player_info_by_account_id(local_player:account_id())
+	if not own_info then return nil, "own player_info not available" end
+	return own_info
+end
 
-	if Managers.event then
-		Managers.event:trigger("event_add_notification_message", "custom", {
-			line_1              = combined,
-			line_1_color        = { 255, 240, 240, 240 },
-			icon                = "content/ui/materials/base/ui_portrait_frame_base",
-			icon_size           = "medium",
-			use_player_portrait = true,
-			player              = local_player,
-			color               = NOTIF_COLORS.online[2],
-			line_color          = NOTIF_COLORS.online[1],
-			glow_opacity        = 0,
-			show_shine          = true,
+-- /social_test — fires one real online notification for yourself using your actual
+-- platform icon, character portrait, and display name.
+mod:command("social_test", "Fire a real 'online' notification through show_notification() using your own player_info", function()
+	local own_info, err = _get_own_info()
+	if not own_info then
+		mod:notify("social_test: " .. err)
+		return
+	end
+	show_notification(own_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+end)
+
+-- /social_multi_test — fires three online notifications, one per platform (Steam,
+-- Xbox, PSN). Each uses a lightweight proxy that overrides only platform_icon() to
+-- return the spoofed raw glyph; show_notification() then runs its real code path
+-- (colorize_platform_icon, user_display_name, portrait, etc.) unmodified.
+-- The DMF hook on PlayerInfo.platform_icon is intentionally bypassed by the proxy
+-- so we test colorize_platform_icon directly with each raw glyph value.
+mod:command("social_multi_test", "Fire three 'online' notifications through show_notification() with spoofed Steam/Xbox/PSN icons", function()
+	local own_info, err = _get_own_info()
+	if not own_info then
+		mod:notify("social_multi_test: " .. err)
+		return
+	end
+
+	local platforms = {
+		{ glyph = GLYPH_STEAM, label = "Steam" },
+		{ glyph = GLYPH_XBOX,  label = "Xbox"  },
+		{ glyph = GLYPH_PSN,   label = "PSN"   },
+	}
+
+	for _, p in ipairs(platforms) do
+		local glyph = p.glyph
+		-- Proxy: platform_icon() returns the spoofed raw glyph; every other key/method
+		-- delegates to the real own_info with own_info as self so internal field access works.
+		local proxy = setmetatable({}, {
+			__index = function(_, key)
+				if key == "platform_icon" then
+					return function(_self) return glyph end
+				end
+				local val = own_info[key]
+				if type(val) == "function" then
+					return function(_self, ...) return val(own_info, ...) end
+				end
+				return val
+			end,
 		})
-	else
-		mod:notify(combined)
+		show_notification(proxy, mod:localize("notif_online_body"), NOTIF_COLORS.online)
 	end
 end)
 
@@ -692,6 +732,46 @@ mod:command("social_dump", "Dump raw PlayerInfo data for all friends", function(
 		end
 	end)
 end)
+-- ============================================================
+-- Test command: /social_test_full
+-- Finds the friend with platform_user_id 011000010027da2a and fires
+-- all four notification types: online, hub, matchmaking, mission.
+-- ============================================================
+
+mod:command("social_test_full", "Fire all notification types for friend 011000010027da2a", function()
+	local TARGET_PUID = "011000010027da2a"
+	local social = Managers.data_service and Managers.data_service.social
+	if not social then
+		mod:notify("social_test_full: social service not available")
+		return
+	end
+
+	social:fetch_friends():next(function(friends)
+		if not friends then
+			mod:notify("social_test_full: no friend list returned")
+			return
+		end
+
+		local target = nil
+		for _, pi in ipairs(friends) do
+			if pi:platform_user_id() == TARGET_PUID then
+				target = pi
+				break
+			end
+		end
+
+		if not target then
+			mod:notify("social_test_full: friend " .. TARGET_PUID .. " not found")
+			return
+		end
+
+		show_notification(target, mod:localize("notif_online_body"),      NOTIF_COLORS.online)
+		show_notification(target, mod:localize("notif_hub_body"),         NOTIF_COLORS.hub)
+		show_notification(target, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
+		show_notification(target, mod:localize("notif_mission_body"),     NOTIF_COLORS.mission)
+	end)
+end)
+
 -- DEV_ONLY_END
 
 mod:hook(PlayerInfo, "user_display_name", function(func, self, use_stale, no_platform_icon)
