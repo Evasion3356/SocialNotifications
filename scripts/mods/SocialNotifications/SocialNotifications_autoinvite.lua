@@ -37,49 +37,43 @@ local function toggle_watch(player_info)
 		_watched[puid] = nil
 	else
 		_watched[puid] = player_info
+		-- Immediately attempt an invite in case they're already in hub
+		try_invite(player_info)
 	end
 end
 
 -- ============================================================
--- Auto-invite loop
+-- Auto-invite logic
 -- ============================================================
 
-local _timer = 0
+-- Attempt to send a party invite to a single watched friend.
+-- Silently skips if conditions aren't met (not in hub, invite pending, etc.).
+local function try_invite(player_info)
+	local party_status = player_info:party_status()
 
-local function run_auto_invite()
+	if party_status == PartyStatus.mine then
+		-- They joined — stop watching
+		_watched[player_info:platform_user_id()] = nil
+		return
+	end
+
+	local online_status = player_info:online_status(true)
+	local activity_id   = player_info:player_activity_id()
+
+	if online_status == OnlineStatus.offline
+		or online_status == OnlineStatus.platform_online
+		or activity_id ~= ACTIVITY_HUB
+		or party_status == PartyStatus.invite_pending then
+		return
+	end
+
 	local social = Managers.data_service and Managers.data_service.social
 	if not social then return end
 
-	local to_remove = {}
-
-	for puid, player_info in pairs(_watched) do
-		local online_status = player_info:online_status(true)
-		local activity_id   = player_info:player_activity_id()
-		local party_status  = player_info:party_status()
-
-		if party_status == PartyStatus.mine then
-			-- Accepted — stop watching
-			to_remove[#to_remove + 1] = puid
-
-		elseif online_status == OnlineStatus.offline
-			or online_status == OnlineStatus.platform_online
-			or activity_id ~= ACTIVITY_HUB then
-			-- wait: not on the Mourningstar
-
-		elseif party_status == PartyStatus.invite_pending then
-			-- Invite already sent, don't spam
-
-		else
-			local can_invite, _ = social:can_invite_to_party(player_info)
-
-			if can_invite then
-				social:send_party_invite(player_info)
-			end
-		end
-	end
-
-	for i = 1, #to_remove do
-		_watched[to_remove[i]] = nil
+	local can_invite, _ = social:can_invite_to_party(player_info)
+	if can_invite then
+		mod:info("[SN:autoinvite] sending invite to %s", player_info:platform_user_id():sub(-6))
+		social:send_party_invite(player_info)
 	end
 end
 
@@ -143,19 +137,10 @@ AutoInvite.inject_items = function(items, count, player_info)
 	return items, count
 end
 
-AutoInvite.update = function(dt)
-	local interval = mod:get("auto_invite_interval") or 30
-	_timer = _timer + dt
-
-	if _timer >= interval then
-		_timer = 0
-		run_auto_invite()
-	end
-end
-
-AutoInvite.reset_timer = function()
-	_timer = 0
-	-- _watched intentionally preserved across resets
+-- Called by SocialNotifications.lua when a watched friend's activity transitions to hub.
+AutoInvite.on_hub_arrival = function(player_info)
+	if not is_watching(player_info) then return end
+	try_invite(player_info)
 end
 
 -- Fired by the backend when an invite is canceled/declined/timed-out.
@@ -172,33 +157,36 @@ AutoInvite.on_party_invite_canceled = function(invite_token, platform, platform_
 	local my_id = Managers.backend and Managers.backend:account_id()
 	if inviter_account_id ~= my_id then return end
 
-	-- The invitee declined when canceler_account_id matches their identity.
-	-- For Fatshark-only / immaterium invites (platform == ""):
-	--   platform_user_id IS their Fatshark account_id, so canceler == puid.
-	-- For platform invites (Steam etc.):
-	--   platform_user_id is the platform hex ID; canceler is their Fatshark UUID.
-	-- Xbox invites always go through immaterium (platform == ""), so puid is the
-	-- Fatshark UUID — different from the Xbox hex ID stored as the _watched key.
-	if canceler_account_id ~= platform_user_id then return end
-
+	-- Find the watched friend this invite was for.
 	-- Primary lookup: direct key match (works for Steam and Fatshark-only friends).
+	-- Fallback: search by Fatshark account_id (needed for Xbox, whose _watched key is
+	-- the Xbox hex ID but the event platform_user_id is the Fatshark UUID).
 	local matched_puid = nil
+	local matched_pi   = nil
 	if _watched[platform_user_id] then
 		matched_puid = platform_user_id
+		matched_pi   = _watched[platform_user_id]
 	else
-		-- Fallback: search by Fatshark account_id (needed for Xbox, whose _watched
-		-- key is the Xbox hex ID but the event puid is the Fatshark UUID).
 		for puid, pi in pairs(_watched) do
 			if pi:account_id() == platform_user_id then
 				matched_puid = puid
+				matched_pi   = pi
 				break
 			end
 		end
 	end
 
-	if matched_puid then
+	if not matched_puid then return end
+
+	-- canceler_account_id == platform_user_id means the invitee actively declined.
+	-- Any other canceler (empty, our own ID, etc.) means a timeout or system cancel —
+	-- resend the invite so the user doesn't have to re-trigger manually.
+	if canceler_account_id == platform_user_id then
 		mod:info("[SN:autoinvite] %s declined invite — removing from watch list", matched_puid:sub(-6))
 		_watched[matched_puid] = nil
+	else
+		mod:info("[SN:autoinvite] invite to %s timed out — resending", matched_puid:sub(-6))
+		try_invite(matched_pi)
 	end
 end
 

@@ -53,12 +53,6 @@ return {
 				default_value = false,
 			},
 			{
-				setting_id    = "auto_invite_interval",
-				type          = "numeric",
-				default_value = 15,
-				range         = { 10, 120 },
-			},
-			{
 				setting_id    = "poll_interval",
 				type          = "numeric",
 				default_value = 10,

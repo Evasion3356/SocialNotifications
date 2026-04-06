@@ -109,6 +109,6 @@ SocialNotifications/
 
 ## Open work / future improvements
 
-1. **Roster-level checkbox** — Visual checkbox directly in the roster list for each friend (not just in the popup). Requires hooking the blueprint init for `player_plaque` entries. Complex; deferred.
-2. **Cross-session persistence** — Persist watched accounts via DMF save data.
-3. **Per-friend notification muting** — UI to suppress presence notifications for specific friends.
+1. **Event-driven auto-invite trigger** — when `_on_immaterium_entry` detects a watched friend transitioning to `hub`, immediately attempt an invite rather than waiting for the next poll cycle (up to `auto_invite_interval` seconds).
+2. **Party join/leave notifications** — diff `party_status` in `process_friend`; notify when a friend's status changes to/from `mine`.
+3. **Roster-level checkbox** — Visual checkbox directly in the roster list for each friend (not just in the popup). Requires injecting a new pass into `player_plaque.pass_template` before the widget definition is first cached by `_get_roster_widget`. Medium difficulty; deferred.
