@@ -38,6 +38,16 @@ return {
 				default_value = true,
 			},
 			{
+				setting_id    = "notify_training",
+				type          = "checkbox",
+				default_value = false,
+			},
+			{
+				setting_id    = "notify_friend_request",
+				type          = "checkbox",
+				default_value = true,
+			},
+			{
 				setting_id    = "skip_party_members",
 				type          = "checkbox",
 				default_value = true,

@@ -24,9 +24,10 @@ end)
 -- Constants
 -- ============================================================
 
-local ACTIVITY_MISSION     = "mission"
-local ACTIVITY_MATCHMAKING = "matchmaking"
-local ACTIVITY_HUB         = "hub"
+local ACTIVITY_MISSION          = "mission"
+local ACTIVITY_MATCHMAKING      = "matchmaking"
+local ACTIVITY_HUB              = "hub"
+local ACTIVITY_TRAINING_GROUNDS = "training_grounds"
 
 local ONLINE_STATUSES = {
 	online       = true,
@@ -35,12 +36,14 @@ local ONLINE_STATUSES = {
 
 -- Per-event-type colors: { line_color {a,r,g,b}, bg_color {a,r,g,b} }
 local NOTIF_COLORS = {
-	online      = { { 255, 100, 220, 120 }, { 160,  15,  40,  20 } },
-	offline     = { { 255, 130, 130, 130 }, { 160,  25,  25,  25 } },
-	mission     = { { 255, 240, 150,  60 }, { 160,  55,  35,  10 } },
-	mission_end = { { 255, 140, 175, 220 }, { 160,  20,  30,  50 } },
-	matchmaking = { { 255, 120, 140, 220 }, { 160,  20,  25,  55 } },
-	hub         = { { 255,  60, 200, 185 }, { 160,  10,  50,  45 } },
+	online           = { { 255, 100, 220, 120 }, { 160,  15,  40,  20 } },
+	offline          = { { 255, 130, 130, 130 }, { 160,  25,  25,  25 } },
+	mission          = { { 255, 240, 150,  60 }, { 160,  55,  35,  10 } },
+	mission_end      = { { 255, 140, 175, 220 }, { 160,  20,  30,  50 } },
+	matchmaking      = { { 255, 120, 140, 220 }, { 160,  20,  25,  55 } },
+	hub              = { { 255,  60, 200, 185 }, { 160,  10,  50,  45 } },
+	training_grounds = { { 255, 200, 220,  80 }, { 160,  45,  50,  10 } },
+	friend_request   = { { 255, 200, 100, 220 }, { 160,  45,  15,  55 } },
 }
 
 -- ============================================================
@@ -53,15 +56,18 @@ local _poll_timer        = 0
 local _poll_interval     = 10  -- cached from settings; updated in on_setting_changed
 
 -- Notification enable flags — cached to avoid mod:get() on every presence event.
-local _notify_online        = true
-local _notify_offline       = false
-local _notify_mission_start = true
-local _notify_mission_end   = false
-local _notify_matchmaking   = true
-local _notify_hub           = true
-local _skip_party_members   = true
-local _skip_platform_friends = true
-local _use_allowlist        = false
+local _notify_online          = true
+local _notify_offline         = false
+local _notify_mission_start   = true
+local _notify_mission_end     = false
+local _notify_matchmaking     = true
+local _notify_hub             = true
+local _notify_training        = false
+local _notify_friend_request  = true
+local _skip_party_members     = true
+local _skip_platform_friends  = true
+local _use_allowlist          = false
+local _known_invites     = nil    -- [account_id] = true; nil while seeding; seeded by seed_invites()
 local _events_registered = false
 local _seeding           = false  -- true while the initial seed poll is in-flight
 local _initial_seed      = false  -- true only for the very first seed after on_all_mods_loaded; gates post-seed online summary
@@ -443,6 +449,9 @@ local function process_friend(player_info, source)
 			elseif new_activity == ACTIVITY_HUB and _notify_hub then
 				mod:info("[SN:%s] NOTIFY hub", short_id)
 				show_notification(player_info, mod:localize("notif_hub_body"), NOTIF_COLORS.hub)
+			elseif new_activity == ACTIVITY_TRAINING_GROUNDS and _notify_training then
+				mod:info("[SN:%s] NOTIFY training_grounds", short_id)
+				show_notification(player_info, mod:localize("notif_training_body"), NOTIF_COLORS.training_grounds)
 			end
 		end
 	end
@@ -566,6 +575,27 @@ end
 -- DMF callbacks
 -- ============================================================
 
+-- Populates _known_invites with the current set of pending incoming friend requests
+-- so that subsequent backend_friend_invite events can diff against a baseline and
+-- only notify for genuinely new requests. Called from reset_state().
+local function seed_invites()
+	local social = Managers.data_service and Managers.data_service.social
+	if not social then
+		_known_invites = {}
+		return
+	end
+	social:fetch_friend_invites():next(function(invites)
+		_known_invites = {}
+		if not invites then return end
+		for _, pi in ipairs(invites) do
+			if pi:friend_status() == FriendStatus.invite then
+				local id = pi:account_id()
+				if id then _known_invites[id] = true end
+			end
+		end
+	end)
+end
+
 -- Full reset: clears all state and re-seeds from scratch.
 -- Used on mod load. Fires post-seed "online" notifications as an
 -- initial presence summary (intentional on first load only).
@@ -574,11 +604,13 @@ local function reset_state()
 	_friend_states     = {}
 	_pending_online    = {}
 	_in_game_session   = {}
+	_known_invites     = nil  -- cleared until seed_invites() completes
 	_poll_timer        = 0
 	_seeding           = true
 	_initial_seed      = true
 	_in_gameplay       = false
-	poll_friends()  -- seeds _friend_states without notifying; clears _seeding when done
+	poll_friends()    -- seeds _friend_states without notifying; clears _seeding when done
+	seed_invites()    -- seeds _known_invites silently so first backend_friend_invite can diff
 end
 
 -- Soft reset: keeps _friend_states intact so the diff stays valid across
@@ -593,11 +625,38 @@ mod._on_party_invite_canceled = function(self, ...)
 	autoinvite.on_party_invite_canceled(...)
 end
 
+-- ============================================================
+-- Event: incoming friend request
+-- Fires when the backend sends a friend invite. We diff against
+-- _known_invites (seeded on load) so we only notify for new requests.
+-- ============================================================
+
+mod._on_friend_invite = function(self, data)
+	if not _notify_friend_request then return end
+	if _known_invites == nil then return end  -- still seeding; skip to avoid false positives
+	local social = Managers.data_service and Managers.data_service.social
+	if not social then return end
+	social:fetch_friend_invites():next(function(invites)
+		if not invites then return end
+		for _, pi in ipairs(invites) do
+			if pi:friend_status() == FriendStatus.invite then
+				local account_id = pi:account_id()
+				if account_id and not _known_invites[account_id] then
+					_known_invites[account_id] = true
+					mod:info("[SN] NOTIFY friend_request from %s", account_id:sub(-6))
+					show_notification(pi, mod:localize("notif_friend_request_body"), NOTIF_COLORS.friend_request)
+				end
+			end
+		end
+	end)
+end
+
 mod.on_unload = function()
 	unload_all_portraits()
 	if Managers.event then
 		Managers.event:unregister(mod, "event_new_immaterium_entry")
 		Managers.event:unregister(mod, "party_immaterium_invite_canceled")
+		Managers.event:unregister(mod, "backend_friend_invite")
 	end
 	_events_registered = false
 end
@@ -610,12 +669,15 @@ mod.on_all_mods_loaded = function()
 	_notify_mission_end     = mod:get("notify_mission_end")
 	_notify_matchmaking     = mod:get("notify_matchmaking")
 	_notify_hub             = mod:get("notify_hub")
+	_notify_training        = mod:get("notify_training")
+	_notify_friend_request  = mod:get("notify_friend_request")
 	_skip_party_members     = mod:get("skip_party_members")
 	_skip_platform_friends  = mod:get("skip_platform_friends")
 	_use_allowlist          = mod:get("use_notification_allowlist")
 	if not _events_registered then
 		Managers.event:register(mod, "event_new_immaterium_entry", "_on_immaterium_entry")
 		Managers.event:register(mod, "party_immaterium_invite_canceled", "_on_party_invite_canceled")
+		Managers.event:register(mod, "backend_friend_invite", "_on_friend_invite")
 		_events_registered = true
 	end
 	reset_state()
@@ -659,6 +721,10 @@ mod.on_setting_changed = function(setting_id)
 		_notify_matchmaking = mod:get("notify_matchmaking")
 	elseif setting_id == "notify_hub" then
 		_notify_hub = mod:get("notify_hub")
+	elseif setting_id == "notify_training" then
+		_notify_training = mod:get("notify_training")
+	elseif setting_id == "notify_friend_request" then
+		_notify_friend_request = mod:get("notify_friend_request")
 	elseif setting_id == "skip_party_members" then
 		_skip_party_members = mod:get("skip_party_members")
 	elseif setting_id == "skip_platform_friends" then
