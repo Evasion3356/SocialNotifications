@@ -178,10 +178,15 @@ AutoInvite.on_party_invite_canceled = function(invite_token, platform, platform_
 
 	if not matched_puid then return end
 
-	-- canceler_account_id == platform_user_id means the invitee actively declined.
-	-- Any other canceler (empty, our own ID, etc.) means a timeout or system cancel —
-	-- resend the invite so the user doesn't have to re-trigger manually.
-	if canceler_account_id == platform_user_id then
+	-- Detect an active decline vs. a timeout/system cancel:
+	--   Fatshark-only friends: platform_user_id doubles as account_id, so
+	--     canceler_account_id == platform_user_id when they decline.
+	--   Platform friends (Steam/Xbox/PSN): platform_user_id is the platform hex ID and
+	--     canceler_account_id is their Fatshark UUID, so compare against account_id().
+	local invitee_account_id = matched_pi:account_id()
+	local declined = canceler_account_id == platform_user_id
+		or (invitee_account_id and invitee_account_id ~= "" and canceler_account_id == invitee_account_id)
+	if declined then
 		mod:info("[SN:autoinvite] %s declined invite — removing from watch list", matched_puid:sub(-6))
 		_watched[matched_puid] = nil
 	else

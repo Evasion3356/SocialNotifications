@@ -51,6 +51,17 @@ local _friend_states     = {}   -- [account_id] = { online, activity }
 local _portrait_cache    = {}   -- [account_id] = load_id; preloaded portraits for online friends
 local _poll_timer        = 0
 local _poll_interval     = 10  -- cached from settings; updated in on_setting_changed
+
+-- Notification enable flags — cached to avoid mod:get() on every presence event.
+local _notify_online        = true
+local _notify_offline       = false
+local _notify_mission_start = true
+local _notify_mission_end   = false
+local _notify_matchmaking   = true
+local _notify_hub           = true
+local _skip_party_members   = true
+local _skip_platform_friends = true
+local _use_allowlist        = false
 local _events_registered = false
 local _seeding           = false  -- true while the initial seed poll is in-flight
 local _initial_seed      = false  -- true only for the very first seed after on_all_mods_loaded; gates post-seed online summary
@@ -212,7 +223,7 @@ local function friendly_name(player_info)
 	if char_name and char_name ~= "" then
 		return char_name
 	end
-	local display = player_info:user_display_name(true, true)
+	local display = player_info:user_display_name(false, true)
 	if display and display ~= "" and display ~= "N/A" then
 		return display
 	end
@@ -232,7 +243,7 @@ local function show_notification(player_info, body, colors)
 		return
 	end
 
-	local profile = player_info and player_info:profile()
+	local profile = player_info:profile()
 	local line1, line2
 
 	if profile then
@@ -286,7 +297,7 @@ end
 -- allowlist (the allowlist overrides skip_platform_friends).
 -- When OFF: fall back to the skip_platform_friends setting.
 local function should_suppress(player_info)
-	if mod:get("skip_party_members") then
+	if _skip_party_members then
 		local ps = player_info:party_status()
 		if ps == PartyStatus.mine or ps == PartyStatus.same_mission then
 			return true
@@ -301,10 +312,10 @@ local function should_suppress(player_info)
 			return true
 		end
 	end
-	if mod:get("use_notification_allowlist") then
+	if _use_allowlist then
 		return not allowlist.is_allowlisted(player_info)
 	end
-	return mod:get("skip_platform_friends")
+	return _skip_platform_friends
 		and player_info:platform_friend_status() == FriendStatus.friend
 end
 
@@ -337,7 +348,7 @@ local function process_friend(player_info, source)
 			short_id, source or "?", tostring(new_online), tostring(new_activity), tostring(_seeding))
 		_friend_states[account_id] = { online = new_online, activity = new_activity, last_update = new_last_update }
 		if new_online then preload_portrait(player_info, account_id) end
-		if not _seeding and new_online and mod:get("notify_online") then
+		if not _seeding and new_online and _notify_online then
 			local suppress = should_suppress(player_info)
 			if not suppress then
 				if player_info:character_name() == "" then
@@ -383,18 +394,24 @@ local function process_friend(player_info, source)
 	prev.activity     = new_activity
 	prev.last_update  = new_last_update
 
-	if online_changed then
-		if new_online then
-			preload_portrait(player_info, account_id)
-		else
-			unload_portrait(account_id)
-		end
+	-- Preload portrait on every update while online — not just on first-sight/online_changed.
+	-- If profile() was nil on the first attempt, _portrait_cache stays nil so we retry here
+	-- until the profile arrives, ensuring it's ready before any notification fires.
+	if new_online then
+		preload_portrait(player_info, account_id)
+	elseif online_changed then
+		unload_portrait(account_id)
+	end
+
+	-- Auto-invite fires on hub arrival regardless of notification suppression.
+	if activity_changed and new_activity == ACTIVITY_HUB then
+		autoinvite.on_hub_arrival(player_info)
 	end
 
 	if (online_changed or activity_changed) and not should_suppress(player_info) then
 		-- Online / offline transitions
 		if online_changed then
-			if new_online and mod:get("notify_online") then
+			if new_online and _notify_online then
 				if player_info:character_name() == "" then
 					-- Character profile hasn't arrived yet (comes in a later presence update).
 					-- Defer the notification; _on_immaterium_entry will flush it once the profile lands.
@@ -405,7 +422,7 @@ local function process_friend(player_info, source)
 					mod:info("[SN:%s] NOTIFY online", short_id)
 					show_notification(player_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
 				end
-			elseif not new_online and mod:get("notify_offline") then
+			elseif not new_online and _notify_offline then
 				_pending_online[account_id] = nil  -- cancel any deferred online notif if they went offline first
 				mod:info("[SN:%s] NOTIFY offline", short_id)
 				show_notification(player_info, mod:localize("notif_offline_body"), NOTIF_COLORS.offline)
@@ -414,23 +431,18 @@ local function process_friend(player_info, source)
 
 		-- Activity transitions (only meaningful while online)
 		if activity_changed then
-			if new_activity == ACTIVITY_MISSION and mod:get("notify_mission_start") then
+			if new_activity == ACTIVITY_MISSION and _notify_mission_start then
 				mod:info("[SN:%s] NOTIFY mission", short_id)
 				show_notification(player_info, mod:localize("notif_mission_body"), NOTIF_COLORS.mission)
-			elseif prev_activity == ACTIVITY_MISSION and mod:get("notify_mission_end") then
+			elseif prev_activity == ACTIVITY_MISSION and _notify_mission_end then
 				mod:info("[SN:%s] NOTIFY mission_end", short_id)
 				show_notification(player_info, mod:localize("notif_mission_end_body"), NOTIF_COLORS.mission_end)
-			elseif new_activity == ACTIVITY_MATCHMAKING and mod:get("notify_matchmaking") then
+			elseif new_activity == ACTIVITY_MATCHMAKING and _notify_matchmaking then
 				mod:info("[SN:%s] NOTIFY matchmaking", short_id)
 				show_notification(player_info, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
-			elseif new_activity == ACTIVITY_HUB and mod:get("notify_hub") then
+			elseif new_activity == ACTIVITY_HUB and _notify_hub then
 				mod:info("[SN:%s] NOTIFY hub", short_id)
 				show_notification(player_info, mod:localize("notif_hub_body"), NOTIF_COLORS.hub)
-			end
-
-			-- Trigger auto-invite immediately on hub arrival, regardless of notification suppression.
-			if new_activity == ACTIVITY_HUB then
-				autoinvite.on_hub_arrival(player_info)
 			end
 		end
 	end
@@ -471,7 +483,7 @@ local function poll_friends()
 		if was_seeding and _initial_seed then
 			_initial_seed = false
 			for account_id, state in pairs(_friend_states) do
-				if state.online and not _pending_online[account_id] and mod:get("notify_online") then
+				if state.online and not _pending_online[account_id] and _notify_online then
 					local pi = social:get_player_info_by_account_id(account_id)
 					if pi and pi:is_friend() then
 						local suppress = should_suppress(pi)
@@ -493,7 +505,7 @@ local function poll_friends()
 				if pi then
 					if pi:character_name() ~= "" or now >= pending.deadline then
 						_pending_online[account_id] = nil
-						if mod:get("notify_online") then
+						if _notify_online then
 							mod:info("[SN:%s] NOTIFY online (poll flush, char=%s)", account_id:sub(-6), tostring(pi:character_name() ~= ""))
 							show_notification(pi, mod:localize("notif_online_body"), NOTIF_COLORS.online)
 						end
@@ -529,13 +541,15 @@ mod._on_immaterium_entry = function(self, new_entry)
 	-- The character profile typically lands in the second update, a few seconds after
 	-- the status-change update that first triggered the "came online" detection.
 	-- Only flush when the HUD is available (_in_gameplay); otherwise keep deferring.
+	local is_friend = player_info:is_friend()
+
 	local pending = _pending_online[account_id]
-	if pending and _in_gameplay and player_info:is_friend() then
+	if pending and _in_gameplay and is_friend then
 		local char_name = player_info:character_name()
 		local now = Managers.time and Managers.time:time("main") or 0
 		if char_name ~= "" or now >= pending.deadline then
 			_pending_online[account_id] = nil
-			if mod:get("notify_online") then
+			if _notify_online then
 				mod:info("[SN:%s] NOTIFY online (deferred flush, char=%s deadline=%s)",
 					account_id:sub(-6), tostring(char_name ~= ""), tostring(now >= pending.deadline))
 				show_notification(player_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
@@ -543,7 +557,7 @@ mod._on_immaterium_entry = function(self, new_entry)
 		end
 	end
 
-	if player_info:is_friend() then
+	if is_friend then
 		process_friend(player_info, "event")
 	end
 end
@@ -589,7 +603,16 @@ mod.on_unload = function()
 end
 
 mod.on_all_mods_loaded = function()
-	_poll_interval = mod:get("poll_interval") or 10
+	_poll_interval          = mod:get("poll_interval") or 10
+	_notify_online          = mod:get("notify_online")
+	_notify_offline         = mod:get("notify_offline")
+	_notify_mission_start   = mod:get("notify_mission_start")
+	_notify_mission_end     = mod:get("notify_mission_end")
+	_notify_matchmaking     = mod:get("notify_matchmaking")
+	_notify_hub             = mod:get("notify_hub")
+	_skip_party_members     = mod:get("skip_party_members")
+	_skip_platform_friends  = mod:get("skip_platform_friends")
+	_use_allowlist          = mod:get("use_notification_allowlist")
 	if not _events_registered then
 		Managers.event:register(mod, "event_new_immaterium_entry", "_on_immaterium_entry")
 		Managers.event:register(mod, "party_immaterium_invite_canceled", "_on_party_invite_canceled")
@@ -624,6 +647,24 @@ end
 mod.on_setting_changed = function(setting_id)
 	if setting_id == "poll_interval" then
 		_poll_interval = mod:get("poll_interval") or 10
+	elseif setting_id == "notify_online" then
+		_notify_online = mod:get("notify_online")
+	elseif setting_id == "notify_offline" then
+		_notify_offline = mod:get("notify_offline")
+	elseif setting_id == "notify_mission_start" then
+		_notify_mission_start = mod:get("notify_mission_start")
+	elseif setting_id == "notify_mission_end" then
+		_notify_mission_end = mod:get("notify_mission_end")
+	elseif setting_id == "notify_matchmaking" then
+		_notify_matchmaking = mod:get("notify_matchmaking")
+	elseif setting_id == "notify_hub" then
+		_notify_hub = mod:get("notify_hub")
+	elseif setting_id == "skip_party_members" then
+		_skip_party_members = mod:get("skip_party_members")
+	elseif setting_id == "skip_platform_friends" then
+		_skip_platform_friends = mod:get("skip_platform_friends")
+	elseif setting_id == "use_notification_allowlist" then
+		_use_allowlist = mod:get("use_notification_allowlist")
 	end
 end
 
