@@ -48,7 +48,9 @@ local NOTIF_COLORS = {
 -- ============================================================
 
 local _friend_states     = {}   -- [account_id] = { online, activity }
+local _portrait_cache    = {}   -- [account_id] = load_id; preloaded portraits for online friends
 local _poll_timer        = 0
+local _poll_interval     = 10  -- cached from settings; updated in on_setting_changed
 local _events_registered = false
 local _seeding           = false  -- true while the initial seed poll is in-flight
 local _initial_seed      = false  -- true only for the very first seed after on_all_mods_loaded; gates post-seed online summary
@@ -66,7 +68,7 @@ local _in_game_session   = {}   -- [account_id] = true for friends confirmed in 
 mod:hook(NotifFeed, "_generate_notification_data", function(original, self, message_type, data)
 	local notification_data = original(self, message_type, data)
 	if notification_data and message_type == "custom" and data.player and data.use_player_portrait then
-		notification_data.player             = data.player
+		notification_data.player              = data.player
 		notification_data.use_player_portrait = true
 	end
 	return notification_data
@@ -167,6 +169,39 @@ mod:hook_safe(PlayerInfo, "set_is_party_member", function(self, is_member)
 end)
 
 -- ============================================================
+-- Portrait preloading
+-- ============================================================
+-- Portraits are loaded asynchronously (5-frame render pipeline + async package load).
+-- We start loading as soon as a friend comes online so the texture is already in the
+-- render target atlas by the time a notification fires — avoiding the frame hitch that
+-- would occur if we triggered loading at display time.
+
+local function preload_portrait(player_info, account_id)
+	if not Managers.ui then return end
+	if _portrait_cache[account_id] then return end  -- already in flight or done
+	local profile = player_info:profile()
+	if not profile then return end
+	_portrait_cache[account_id] = Managers.ui:load_profile_portrait(profile, function() end)
+end
+
+local function unload_portrait(account_id)
+	local load_id = _portrait_cache[account_id]
+	if load_id and Managers.ui then
+		Managers.ui:unload_profile_portrait(load_id)
+	end
+	_portrait_cache[account_id] = nil
+end
+
+local function unload_all_portraits()
+	if Managers.ui then
+		for _, load_id in pairs(_portrait_cache) do
+			Managers.ui:unload_profile_portrait(load_id)
+		end
+	end
+	_portrait_cache = {}
+end
+
+-- ============================================================
 -- Notification display
 -- ============================================================
 
@@ -209,16 +244,14 @@ local function show_notification(player_info, body, colors)
 		local arch_icon = archetype_id and UISettings.archetype_font_icon_simple[archetype_id] or ""
 		line1 = arch_icon ~= "" and (arch_icon .. " " .. char_name) or char_name
 
-		-- Line 2: colored platform icon + display name + body.
-		-- platform_icon() now returns a raw glyph (globe already resolved by our hook),
-		-- so colorize_platform_icon just maps glyph → colored rich-text for our display only.
-		local raw_icon = player_info:platform_icon()
-		local display = player_info:user_display_name(false, true)
+		-- Line 2: display name (includes colored platform icon from our platform_icon hook) + body.
+		-- user_display_name(false, false) recomputes fresh and prepends platform_icon() internally,
+		-- which our hook already colorizes — no manual icon prepend needed.
+		local display = player_info:user_display_name(false, false)
 		if not display or display == "" or display == "N/A" then
 			display = "Unknown"
 		end
-		local icon = colorize_platform_icon(raw_icon)
-		line2 = (icon ~= "" and (icon .. " ") or "") .. display .. " " .. body
+		line2 = display .. " " .. body
 
 		mod:info("[SN] show_notification profile dump — char=%s archetype_id=%s arch_icon=%s display=%s",
 			tostring(char_name), tostring(archetype_id), tostring(arch_icon ~= ""), tostring(display))
@@ -238,7 +271,7 @@ local function show_notification(player_info, body, colors)
 		show_shine   = true,
 	}
 	if profile then
-		data.player             = player_info
+		data.player              = player_info
 		data.use_player_portrait = true
 	end
 	Managers.event:trigger("event_add_notification_message", "custom", data)
@@ -303,6 +336,7 @@ local function process_friend(player_info, source)
 		mod:info("[SN:%s] first-sight via %s — seeding online=%s activity=%s seeding=%s",
 			short_id, source or "?", tostring(new_online), tostring(new_activity), tostring(_seeding))
 		_friend_states[account_id] = { online = new_online, activity = new_activity, last_update = new_last_update }
+		if new_online then preload_portrait(player_info, account_id) end
 		if not _seeding and new_online and mod:get("notify_online") then
 			local suppress = should_suppress(player_info)
 			if not suppress then
@@ -342,9 +376,6 @@ local function process_friend(player_info, source)
 			tostring(prev.last_update), tostring(new_last_update))
 	end
 
-	-- State is always updated so toggling suppress settings mid-session stays clean.
-	local suppress = should_suppress(player_info)
-
 	-- Update state before notifying so that any re-entrant event fired during
 	-- show_notification sees the already-committed new state and produces no diff.
 	local prev_activity = prev.activity
@@ -352,7 +383,15 @@ local function process_friend(player_info, source)
 	prev.activity     = new_activity
 	prev.last_update  = new_last_update
 
-	if not suppress then
+	if online_changed then
+		if new_online then
+			preload_portrait(player_info, account_id)
+		else
+			unload_portrait(account_id)
+		end
+	end
+
+	if (online_changed or activity_changed) and not should_suppress(player_info) then
 		-- Online / offline transitions
 		if online_changed then
 			if new_online and mod:get("notify_online") then
@@ -517,6 +556,7 @@ end
 -- Used on mod load. Fires post-seed "online" notifications as an
 -- initial presence summary (intentional on first load only).
 local function reset_state()
+	unload_all_portraits()
 	_friend_states     = {}
 	_pending_online    = {}
 	_in_game_session   = {}
@@ -540,6 +580,7 @@ mod._on_party_invite_canceled = function(self, ...)
 end
 
 mod.on_unload = function()
+	unload_all_portraits()
 	if Managers.event then
 		Managers.event:unregister(mod, "event_new_immaterium_entry")
 		Managers.event:unregister(mod, "party_immaterium_invite_canceled")
@@ -548,6 +589,7 @@ mod.on_unload = function()
 end
 
 mod.on_all_mods_loaded = function()
+	_poll_interval = mod:get("poll_interval") or 10
 	if not _events_registered then
 		Managers.event:register(mod, "event_new_immaterium_entry", "_on_immaterium_entry")
 		Managers.event:register(mod, "party_immaterium_invite_canceled", "_on_party_invite_canceled")
@@ -565,6 +607,7 @@ mod.on_game_state_changed = function(status, state_name)
 			-- was "online" in _friend_states gets diffed against their temporarily-offline
 			-- presence entry and fires a spurious offline notification.
 			-- soft_reset on StateMainMenu entry will re-seed from the new baseline.
+			unload_all_portraits()
 			_friend_states     = {}
 			_pending_online    = {}
 			_in_game_session   = {}
@@ -578,10 +621,15 @@ mod.on_game_state_changed = function(status, state_name)
 	end
 end
 
+mod.on_setting_changed = function(setting_id)
+	if setting_id == "poll_interval" then
+		_poll_interval = mod:get("poll_interval") or 10
+	end
+end
+
 mod.update = function(dt)
 	_poll_timer = _poll_timer + dt
-	local interval = mod:get("poll_interval") or 10
-	if _poll_timer >= interval then
+	if _poll_timer >= _poll_interval then
 		_poll_timer = 0
 		poll_friends()
 	end
@@ -640,14 +688,23 @@ mod:command("social_multi_test", "Fire three 'online' notifications through show
 		{ glyph = GLYPH_PSN,   label = "PSN"   },
 	}
 
-	for _, p in ipairs(platforms) do
+	for i = #platforms, 1, -1 do
+		local p = platforms[i]
 		local glyph = p.glyph
-		-- Proxy: platform_icon() returns the spoofed raw glyph; every other key/method
-		-- delegates to the real own_info with own_info as self so internal field access works.
+		-- Proxy: overrides platform_icon() and user_display_name() to inject the spoofed
+		-- platform glyph. user_display_name must also be overridden because show_notification
+		-- calls it directly (which would otherwise delegate to own_info's real platform_icon).
 		local proxy = setmetatable({}, {
 			__index = function(_, key)
 				if key == "platform_icon" then
 					return function(_self) return glyph end
+				end
+				if key == "user_display_name" then
+					return function(_self, use_stale, no_icon)
+						local name = own_info:user_display_name(use_stale, true)
+						if no_icon then return name end
+						return colorize_platform_icon(glyph) .. " " .. name
+					end
 				end
 				local val = own_info[key]
 				if type(val) == "function" then
@@ -798,10 +855,10 @@ mod:command("social_test_full", "Fire all notification types for friend 01100001
 			return
 		end
 
-		show_notification(target, mod:localize("notif_online_body"),      NOTIF_COLORS.online)
-		show_notification(target, mod:localize("notif_hub_body"),         NOTIF_COLORS.hub)
-		show_notification(target, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
 		show_notification(target, mod:localize("notif_mission_body"),     NOTIF_COLORS.mission)
+		show_notification(target, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
+		show_notification(target, mod:localize("notif_hub_body"),         NOTIF_COLORS.hub)
+		show_notification(target, mod:localize("notif_online_body"),      NOTIF_COLORS.online)
 	end)
 end)
 

@@ -170,7 +170,7 @@ A single `mod:hook(ContentList, "from_player_info", ...)` in `SocialNotification
 ## Planned work (see GOAL.md for detail)
 
 1. ~~**Event-driven auto-invite trigger**~~ — **Done.** Timer-based polling replaced entirely. Invites now fire immediately on hub arrival (via `autoinvite.on_hub_arrival` called from `process_friend`), on `toggle_watch` enable (if friend is already in hub), and on invite timeout via `on_party_invite_canceled` (resend instead of no-op). Explicit declines still remove the friend from the watch list. `auto_invite_interval` setting and all timer code removed.
-2. **Party join/leave notifications** — extend `process_friend` to diff `party_status` alongside `online_status` and `player_activity_id`. Fire a notification when a friend's status changes to `mine` ("joined your party") or from `mine` to anything else ("left your party").
+2. ~~**Party join/leave notifications**~~ — **Not needed.** The game already handles this natively in `party_immaterium_manager.lua` (`_handle_member_joined`/`_handle_member_left`), firing a default HUD notification with the character name and a sound effect on both join and leave.
 3. **Roster-level checkbox** — visual checkbox in the friend roster row itself, not just the popup. Requires injecting a new pass into `player_plaque.pass_template` before the widget definition is cached. Medium difficulty; deferred.
 
 ## Release build
