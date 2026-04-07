@@ -29,19 +29,6 @@ local function is_watching(player_info)
 	return puid ~= "" and _watched[puid] ~= nil
 end
 
-local function toggle_watch(player_info)
-	local puid = player_info:platform_user_id()
-	if puid == "" then return end
-
-	if _watched[puid] then
-		_watched[puid] = nil
-	else
-		_watched[puid] = player_info
-		-- Immediately attempt an invite in case they're already in hub
-		try_invite(player_info)
-	end
-end
-
 -- ============================================================
 -- Auto-invite logic
 -- ============================================================
@@ -74,6 +61,19 @@ local function try_invite(player_info)
 	if can_invite then
 		mod:info("[SN:autoinvite] sending invite to %s", player_info:platform_user_id():sub(-6))
 		social:send_party_invite(player_info)
+	end
+end
+
+local function toggle_watch(player_info)
+	local puid = player_info:platform_user_id()
+	if puid == "" then return end
+
+	if _watched[puid] then
+		_watched[puid] = nil
+	else
+		_watched[puid] = player_info
+		-- Immediately attempt an invite in case they're already in hub
+		try_invite(player_info)
 	end
 end
 

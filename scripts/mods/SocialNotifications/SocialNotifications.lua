@@ -54,6 +54,7 @@ local _seeding           = false  -- true while the initial seed poll is in-flig
 local _initial_seed      = false  -- true only for the very first seed after on_all_mods_loaded; gates post-seed online summary
 local _pending_online    = {}   -- [account_id] = { name, deadline } — online notifications deferred until character profile arrives
 local _in_gameplay       = false  -- true only while GameplayStateRun is active (HUD is available)
+local _in_game_session   = {}   -- [account_id] = true for friends confirmed in the same game instance this session
 
 -- ============================================================
 -- Hook: extend "custom" notification type to support player portraits.
@@ -148,6 +149,24 @@ mod:hook(PlayerInfo, "platform_icon", function(func, self)
 end)
 
 -- ============================================================
+-- Game-session membership tracking
+-- ============================================================
+-- PlayerInfo._is_party_member is set by SocialService whenever a human player
+-- enters (or leaves) the local player's current game instance.  We hook the
+-- setter so that — regardless of polling timing — we always learn which friends
+-- shared a game session with us.  The set is cleared on GameplayStateRun exit
+-- so it never bleeds across sessions.
+
+mod:hook_safe(PlayerInfo, "set_is_party_member", function(self, is_member)
+	if is_member then
+		local account_id = self:account_id()
+		if account_id and account_id ~= "" then
+			_in_game_session[account_id] = true
+		end
+	end
+end)
+
+-- ============================================================
 -- Notification display
 -- ============================================================
 
@@ -234,8 +253,20 @@ end
 -- allowlist (the allowlist overrides skip_platform_friends).
 -- When OFF: fall back to the skip_platform_friends setting.
 local function should_suppress(player_info)
-	if mod:get("skip_party_members") and player_info:party_status() == PartyStatus.mine then
-		return true
+	if mod:get("skip_party_members") then
+		local ps = player_info:party_status()
+		if ps == PartyStatus.mine or ps == PartyStatus.same_mission then
+			return true
+		end
+		-- Also suppress if the friend was confirmed in the same game instance this
+		-- session (tracked via set_is_party_member hook).  party_status() may already
+		-- have reverted to "none"/"other" by the time an event fires (e.g. a friend
+		-- leaving the mission clears _is_party_member before the event arrives), so
+		-- we keep our own record for the duration of the current GameplayStateRun.
+		local account_id = player_info:account_id()
+		if account_id and _in_game_session[account_id] then
+			return true
+		end
 	end
 	if mod:get("use_notification_allowlist") then
 		return not allowlist.is_allowlisted(player_info)
@@ -486,12 +517,13 @@ end
 -- Used on mod load. Fires post-seed "online" notifications as an
 -- initial presence summary (intentional on first load only).
 local function reset_state()
-	_friend_states  = {}
-	_pending_online = {}
-	_poll_timer     = 0
-	_seeding        = true
-	_initial_seed   = true
-	_in_gameplay    = false
+	_friend_states     = {}
+	_pending_online    = {}
+	_in_game_session   = {}
+	_poll_timer        = 0
+	_seeding           = true
+	_initial_seed      = true
+	_in_gameplay       = false
 	poll_friends()  -- seeds _friend_states without notifying; clears _seeding when done
 end
 
@@ -533,9 +565,10 @@ mod.on_game_state_changed = function(status, state_name)
 			-- was "online" in _friend_states gets diffed against their temporarily-offline
 			-- presence entry and fires a spurious offline notification.
 			-- soft_reset on StateMainMenu entry will re-seed from the new baseline.
-			_friend_states  = {}
-			_pending_online = {}
-			_seeding        = true
+			_friend_states     = {}
+			_pending_online    = {}
+			_in_game_session   = {}
+			_seeding           = true
 		end
 	end
 	if status == "enter" and (state_name == "GameplayStateRun" or state_name == "StateMainMenu") then
