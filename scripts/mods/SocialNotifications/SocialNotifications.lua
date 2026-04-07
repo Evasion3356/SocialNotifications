@@ -64,6 +64,7 @@ local _notify_matchmaking     = true
 local _notify_hub             = true
 local _notify_training        = false
 local _notify_friend_request  = true
+local _show_party_size        = false
 local _skip_party_members     = true
 local _skip_platform_friends  = true
 local _use_allowlist          = false
@@ -329,6 +330,17 @@ end
 -- Core: diff one friend, fire notifications on changes
 -- ============================================================
 
+-- Returns " (N/4)" when party size data is available, otherwise "".
+-- Applied to activity notifications so the reader knows the party fill level.
+local function party_suffix(player_info)
+	if not _show_party_size then return "" end
+	local n = player_info:num_party_members()
+	if n and n >= 1 then
+		return " (" .. n .. "/4)"
+	end
+	return ""
+end
+
 local function get_last_update(player_info)
 	local presence = player_info._presence
 	local entry = presence and presence._immaterium_entry
@@ -439,19 +451,19 @@ local function process_friend(player_info, source)
 		if activity_changed then
 			if new_activity == ACTIVITY_MISSION and _notify_mission_start then
 				mod:info("[SN:%s] NOTIFY mission", short_id)
-				show_notification(player_info, mod:localize("notif_mission_body"), NOTIF_COLORS.mission)
+				show_notification(player_info, mod:localize("notif_mission_body") .. party_suffix(player_info), NOTIF_COLORS.mission)
 			elseif prev_activity == ACTIVITY_MISSION and _notify_mission_end then
 				mod:info("[SN:%s] NOTIFY mission_end", short_id)
-				show_notification(player_info, mod:localize("notif_mission_end_body"), NOTIF_COLORS.mission_end)
+				show_notification(player_info, mod:localize("notif_mission_end_body") .. party_suffix(player_info), NOTIF_COLORS.mission_end)
 			elseif new_activity == ACTIVITY_MATCHMAKING and _notify_matchmaking then
 				mod:info("[SN:%s] NOTIFY matchmaking", short_id)
-				show_notification(player_info, mod:localize("notif_matchmaking_body"), NOTIF_COLORS.matchmaking)
+				show_notification(player_info, mod:localize("notif_matchmaking_body") .. party_suffix(player_info), NOTIF_COLORS.matchmaking)
 			elseif new_activity == ACTIVITY_HUB and _notify_hub then
 				mod:info("[SN:%s] NOTIFY hub", short_id)
-				show_notification(player_info, mod:localize("notif_hub_body"), NOTIF_COLORS.hub)
+				show_notification(player_info, mod:localize("notif_hub_body") .. party_suffix(player_info), NOTIF_COLORS.hub)
 			elseif new_activity == ACTIVITY_TRAINING_GROUNDS and _notify_training then
 				mod:info("[SN:%s] NOTIFY training_grounds", short_id)
-				show_notification(player_info, mod:localize("notif_training_body"), NOTIF_COLORS.training_grounds)
+				show_notification(player_info, mod:localize("notif_training_body") .. party_suffix(player_info), NOTIF_COLORS.training_grounds)
 			end
 		end
 	end
@@ -671,6 +683,7 @@ mod.on_all_mods_loaded = function()
 	_notify_hub             = mod:get("notify_hub")
 	_notify_training        = mod:get("notify_training")
 	_notify_friend_request  = mod:get("notify_friend_request")
+	_show_party_size        = mod:get("show_party_size")
 	_skip_party_members     = mod:get("skip_party_members")
 	_skip_platform_friends  = mod:get("skip_platform_friends")
 	_use_allowlist          = mod:get("use_notification_allowlist")
@@ -725,6 +738,8 @@ mod.on_setting_changed = function(setting_id)
 		_notify_training = mod:get("notify_training")
 	elseif setting_id == "notify_friend_request" then
 		_notify_friend_request = mod:get("notify_friend_request")
+	elseif setting_id == "show_party_size" then
+		_show_party_size = mod:get("show_party_size")
 	elseif setting_id == "skip_party_members" then
 		_skip_party_members = mod:get("skip_party_members")
 	elseif setting_id == "skip_platform_friends" then

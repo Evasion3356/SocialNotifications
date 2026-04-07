@@ -114,7 +114,7 @@ SocialNotifications/
 3. **Roster-level checkbox** — Visual checkbox directly in the roster list for each friend (not just in the popup). Requires injecting a new pass into `player_plaque.pass_template` before the widget definition is first cached by `_get_roster_widget`. Medium difficulty; deferred.
 4. ~~**Training grounds notification**~~ — **Done.** `training_grounds` activity now handled with yellow-green accent; off by default.
 5. ~~**Friend request notification**~~ — **Done.** Registers `backend_friend_invite` event; diffs against `_known_invites` seeded on load; shows purple-accented HUD toast.
-6. **Party size in notifications** — Enrich notification text with `num_party_members()`, e.g. "started a mission (3/4)". Requires touching `show_notification` or the body-building logic in `process_friend`.
+6. ~~**Party size in notifications**~~ — **Done.** `party_suffix(player_info)` appended to all five activity notification bodies (mission, mission_end, matchmaking, hub, training_grounds). Shows "(N/4)" when `num_party_members() >= 1`; silent when data is unavailable (returns 0).
 
 ## Maybe / future ideas
 
