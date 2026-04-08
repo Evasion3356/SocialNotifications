@@ -369,8 +369,8 @@ local function process_friend(player_info, source)
 		if not _seeding and new_online and _notify_online then
 			local suppress = should_suppress(player_info)
 			if not suppress then
-				if player_info:character_name() == "" then
-					mod:info("[SN:%s] first-sight online deferred (no character profile yet)", short_id)
+				if not _in_gameplay or player_info:character_name() == "" then
+					mod:info("[SN:%s] first-sight online deferred (not in gameplay or no character profile yet)", short_id)
 					local deadline = (Managers.time and Managers.time:time("main") or 0) + 6
 					_pending_online[account_id] = { deadline = deadline }
 				else
@@ -430,25 +430,25 @@ local function process_friend(player_info, source)
 		-- Online / offline transitions
 		if online_changed then
 			if new_online and _notify_online then
-				if player_info:character_name() == "" then
-					-- Character profile hasn't arrived yet (comes in a later presence update).
-					-- Defer the notification; _on_immaterium_entry will flush it once the profile lands.
-					mod:info("[SN:%s] online notification deferred (no character profile yet)", short_id)
+				if not _in_gameplay or player_info:character_name() == "" then
+					-- Defer until HUD is available (not yet in gameplay) or until character
+					-- profile arrives (comes in a later presence update).
+					mod:info("[SN:%s] online notification deferred (not in gameplay or no character profile yet)", short_id)
 					local deadline = (Managers.time and Managers.time:time("main") or 0) + 6
 					_pending_online[account_id] = { deadline = deadline }
 				else
 					mod:info("[SN:%s] NOTIFY online", short_id)
 					show_notification(player_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
 				end
-			elseif not new_online and _notify_offline then
+			elseif not new_online and _notify_offline and _in_gameplay then
 				_pending_online[account_id] = nil  -- cancel any deferred online notif if they went offline first
 				mod:info("[SN:%s] NOTIFY offline", short_id)
 				show_notification(player_info, mod:localize("notif_offline_body"), NOTIF_COLORS.offline)
 			end
 		end
 
-		-- Activity transitions (only meaningful while online)
-		if activity_changed then
+		-- Activity transitions (only meaningful while online and HUD is available)
+		if activity_changed and _in_gameplay then
 			if new_activity == ACTIVITY_MISSION and _notify_mission_start then
 				mod:info("[SN:%s] NOTIFY mission", short_id)
 				show_notification(player_info, mod:localize("notif_mission_body") .. party_suffix(player_info), NOTIF_COLORS.mission)
@@ -645,6 +645,7 @@ end
 
 mod._on_friend_invite = function(self, data)
 	if not _notify_friend_request then return end
+	if not _in_gameplay then return end  -- wait until HUD is available
 	if _known_invites == nil then return end  -- still seeding; skip to avoid false positives
 	local social = Managers.data_service and Managers.data_service.social
 	if not social then return end
