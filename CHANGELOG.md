@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.0 — 2026-04-07
+
+### New features
+- **Per-friend notification allowlist** — toggle notifications on/off for individual friends via their social popup. Persists across sessions.
+- **Party suppression** — optionally skip notifications for friends already in your party or your current game session.
+- **Training grounds notifications** — get notified when a friend enters the training grounds (off by default).
+- **Friend request notifications** — get notified when someone sends you a friend request.
+- **Party size display** — activity notifications can now show the friend's current party size (e.g. "entered a mission (2/4)").
+- **Auto-invite: event-driven** — auto-invite now fires instantly when a watched friend arrives in the hub, rather than waiting for a polling interval. The interval setting has been removed.
+- **Auto-invite: Mourningstar-only** — auto-invites are now restricted to when you are in the hub, preventing accidental invites while you're in a mission.
+
+### Bug fixes
+- Notifications no longer appear during the login / character select screen; they are held until you are fully loaded into the Mourningstar.
+- Fixed spurious offline/online notifications firing for friends who were in the same game session when the session ends.
+- Fixed a crash when auto-invite attempted to call `try_invite` before the function reference was resolved.
+- Fixed cross-platform friend icons (Steam, Xbox, PSN) displaying as a generic globe in who_are_you nameplates and hub panels for offline friends.
+- Fixed double-icon rendering in notifications.
+- Fixed a minor FPS hitch caused by redundant per-frame work in the poll loop.
+- Fixed duplicate notifications that could fire when the mod reloaded mid-session.
+
 ## 1.0.0 — 2026-04-05
 
 Initial release.
