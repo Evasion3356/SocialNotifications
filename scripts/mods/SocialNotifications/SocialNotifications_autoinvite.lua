@@ -22,7 +22,10 @@ local ACTIVITY_HUB = "hub"
 -- Intentionally NOT cleared on map transitions — user intent persists.
 -- ============================================================
 
-local _watched = {}   -- [platform_user_id] = player_info
+local _watched      = {}   -- [platform_user_id] = player_info
+local _invite_sent  = {}   -- [platform_user_id] = true while an invite is in-flight
+                           -- Guards against sending duplicates before party_status() updates
+                           -- asynchronously to reflect the pending invite.
 
 local function is_watching(player_info)
 	local puid = player_info:platform_user_id()
@@ -35,12 +38,16 @@ end
 
 -- Attempt to send a party invite to a single watched friend.
 -- Silently skips if conditions aren't met (not in hub, invite pending, etc.).
-local function try_invite(player_info)
+-- Pass skip_pending_check=true when calling after an invite timeout, because
+-- party_status() may still transiently return invite_pending at that moment.
+local function try_invite(player_info, skip_pending_check)
+	local puid         = player_info:platform_user_id()
 	local party_status = player_info:party_status()
 
 	if party_status == PartyStatus.mine then
 		-- They joined — stop watching
-		_watched[player_info:platform_user_id()] = nil
+		_watched[puid]     = nil
+		_invite_sent[puid] = nil
 		return
 	end
 
@@ -50,16 +57,21 @@ local function try_invite(player_info)
 	if online_status == OnlineStatus.offline
 		or online_status == OnlineStatus.platform_online
 		or activity_id ~= ACTIVITY_HUB
-		or party_status == PartyStatus.invite_pending then
+		or (not skip_pending_check and party_status == PartyStatus.invite_pending)
+		or _invite_sent[puid] then
 		return
 	end
 
 	local social = Managers.data_service and Managers.data_service.social
 	if not social then return end
 
-	local can_invite, _ = social:can_invite_to_party(player_info)
-	if can_invite then
-		mod:info("[SN:autoinvite] sending invite to %s", player_info:platform_user_id():sub(-6))
+	-- When skip_pending_check is true we already know the previous invite expired,
+	-- so party_status may still transiently read invite_pending — bypass can_invite_to_party
+	-- (which has the same internal check) and send directly.
+	local ok_to_send = skip_pending_check or social:can_invite_to_party(player_info)
+	if ok_to_send then
+		mod:info("[SN:autoinvite] sending invite to %s", puid:sub(-6))
+		_invite_sent[puid] = true
 		social:send_party_invite(player_info)
 	end
 end
@@ -69,7 +81,8 @@ local function toggle_watch(player_info)
 	if puid == "" then return end
 
 	if _watched[puid] then
-		_watched[puid] = nil
+		_watched[puid]     = nil
+		_invite_sent[puid] = nil
 	else
 		_watched[puid] = player_info
 		-- Immediately attempt an invite in case they're already in hub
@@ -143,7 +156,35 @@ AutoInvite.on_hub_arrival = function(player_info)
 	try_invite(player_info)
 end
 
--- Fired by the backend when an invite is canceled/declined/timed-out.
+-- Fired by the backend when an invite times out (no response from invitee).
+-- Signature: invite_token, platform, platform_user_id, inviter_account_id
+AutoInvite.on_party_invite_timeout = function(invite_token, platform, platform_user_id, inviter_account_id)
+	local my_id = Managers.backend and Managers.backend:account_id()
+	if inviter_account_id ~= my_id then return end
+
+	local matched_puid = nil
+	local matched_pi   = nil
+	if _watched[platform_user_id] then
+		matched_puid = platform_user_id
+		matched_pi   = _watched[platform_user_id]
+	else
+		for puid, pi in pairs(_watched) do
+			if pi:account_id() == platform_user_id then
+				matched_puid = puid
+				matched_pi   = pi
+				break
+			end
+		end
+	end
+
+	if not matched_puid then return end
+
+	mod:info("[SN:autoinvite] invite to %s timed out — resending", matched_puid:sub(-6))
+	_invite_sent[matched_puid] = nil
+	try_invite(matched_pi, true)
+end
+
+-- Fired by the backend when an invite is canceled/declined.
 -- Signature: invite_token, platform, platform_user_id, inviter_account_id,
 --            canceler_account_id, answer_code
 -- The invitee declined when canceler_account_id identifies them — but the ID
@@ -178,20 +219,26 @@ AutoInvite.on_party_invite_canceled = function(invite_token, platform, platform_
 
 	if not matched_puid then return end
 
-	-- Detect an active decline vs. a timeout/system cancel:
+	-- Detect an active decline vs. a system cancel (e.g. PARTY_FULL):
 	--   Fatshark-only friends: platform_user_id doubles as account_id, so
 	--     canceler_account_id == platform_user_id when they decline.
 	--   Platform friends (Steam/Xbox/PSN): platform_user_id is the platform hex ID and
 	--     canceler_account_id is their Fatshark UUID, so compare against account_id().
+	-- Note: timeouts are handled separately via on_party_invite_timeout.
 	local invitee_account_id = matched_pi:account_id()
 	local declined = canceler_account_id == platform_user_id
 		or (invitee_account_id and invitee_account_id ~= "" and canceler_account_id == invitee_account_id)
+	-- Clear the in-flight flag so try_invite can send again (either a resend or a
+	-- fresh invite next time they arrive in hub).
+	_invite_sent[matched_puid] = nil
+
 	if declined then
 		mod:info("[SN:autoinvite] %s declined invite — removing from watch list", matched_puid:sub(-6))
 		_watched[matched_puid] = nil
 	else
-		mod:info("[SN:autoinvite] invite to %s timed out — resending", matched_puid:sub(-6))
-		try_invite(matched_pi)
+		-- System cancel (e.g. party full, game session started) — resend
+		mod:info("[SN:autoinvite] invite to %s system-canceled (answer=%s) — resending", matched_puid:sub(-6), tostring(answer_code))
+		try_invite(matched_pi, true)
 	end
 end
 

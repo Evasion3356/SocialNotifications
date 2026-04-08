@@ -637,6 +637,10 @@ mod._on_party_invite_canceled = function(self, ...)
 	autoinvite.on_party_invite_canceled(...)
 end
 
+mod._on_party_invite_timeout = function(self, ...)
+	autoinvite.on_party_invite_timeout(...)
+end
+
 -- ============================================================
 -- Event: incoming friend request
 -- Fires when the backend sends a friend invite. We diff against
@@ -669,6 +673,7 @@ mod.on_unload = function()
 	if Managers.event then
 		Managers.event:unregister(mod, "event_new_immaterium_entry")
 		Managers.event:unregister(mod, "party_immaterium_invite_canceled")
+		Managers.event:unregister(mod, "party_immaterium_invite_timeout")
 		Managers.event:unregister(mod, "backend_friend_invite")
 	end
 	_events_registered = false
@@ -691,6 +696,7 @@ mod.on_all_mods_loaded = function()
 	if not _events_registered then
 		Managers.event:register(mod, "event_new_immaterium_entry", "_on_immaterium_entry")
 		Managers.event:register(mod, "party_immaterium_invite_canceled", "_on_party_invite_canceled")
+		Managers.event:register(mod, "party_immaterium_invite_timeout", "_on_party_invite_timeout")
 		Managers.event:register(mod, "backend_friend_invite", "_on_friend_invite")
 		_events_registered = true
 	end
