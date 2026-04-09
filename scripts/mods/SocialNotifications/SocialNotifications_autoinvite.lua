@@ -156,27 +156,29 @@ AutoInvite.on_hub_arrival = function(player_info)
 	try_invite(player_info)
 end
 
+-- Returns (puid, player_info) for a watched friend identified by platform_user_id.
+-- Primary: direct key match (Steam, Fatshark-only).
+-- Fallback: search by Fatshark account_id (Xbox, whose _watched key is the Xbox
+-- hex ID but invite events carry the Fatshark UUID).
+local function find_watched(platform_user_id)
+	if _watched[platform_user_id] then
+		return platform_user_id, _watched[platform_user_id]
+	end
+	for puid, pi in pairs(_watched) do
+		if pi:account_id() == platform_user_id then
+			return puid, pi
+		end
+	end
+	return nil, nil
+end
+
 -- Fired by the backend when an invite times out (no response from invitee).
 -- Signature: invite_token, platform, platform_user_id, inviter_account_id
 AutoInvite.on_party_invite_timeout = function(invite_token, platform, platform_user_id, inviter_account_id)
 	local my_id = Managers.backend and Managers.backend:account_id()
 	if inviter_account_id ~= my_id then return end
 
-	local matched_puid = nil
-	local matched_pi   = nil
-	if _watched[platform_user_id] then
-		matched_puid = platform_user_id
-		matched_pi   = _watched[platform_user_id]
-	else
-		for puid, pi in pairs(_watched) do
-			if pi:account_id() == platform_user_id then
-				matched_puid = puid
-				matched_pi   = pi
-				break
-			end
-		end
-	end
-
+	local matched_puid, matched_pi = find_watched(platform_user_id)
 	if not matched_puid then return end
 
 	mod:info("[SN:autoinvite] invite to %s timed out — resending", matched_puid:sub(-6))
@@ -199,24 +201,7 @@ AutoInvite.on_party_invite_canceled = function(invite_token, platform, platform_
 	if inviter_account_id ~= my_id then return end
 
 	-- Find the watched friend this invite was for.
-	-- Primary lookup: direct key match (works for Steam and Fatshark-only friends).
-	-- Fallback: search by Fatshark account_id (needed for Xbox, whose _watched key is
-	-- the Xbox hex ID but the event platform_user_id is the Fatshark UUID).
-	local matched_puid = nil
-	local matched_pi   = nil
-	if _watched[platform_user_id] then
-		matched_puid = platform_user_id
-		matched_pi   = _watched[platform_user_id]
-	else
-		for puid, pi in pairs(_watched) do
-			if pi:account_id() == platform_user_id then
-				matched_puid = puid
-				matched_pi   = pi
-				break
-			end
-		end
-	end
-
+	local matched_puid, matched_pi = find_watched(platform_user_id)
 	if not matched_puid then return end
 
 	-- Detect an active decline vs. a system cancel (e.g. PARTY_FULL):
