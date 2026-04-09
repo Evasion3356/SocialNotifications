@@ -51,7 +51,7 @@ local NOTIF_COLORS = {
 -- ============================================================
 
 local _friend_states     = {}   -- [account_id] = { online, activity }
-local _portrait_cache    = {}   -- [account_id] = load_id; preloaded portraits for online friends
+local _portrait_cache    = {}   -- [account_id] = { load_id, char_id }; preloaded portraits for online friends
 local _poll_timer        = 0
 local _poll_interval     = 10  -- cached from settings; updated in on_setting_changed
 
@@ -195,25 +195,54 @@ end)
 -- would occur if we triggered loading at display time.
 
 local function preload_portrait(player_info, account_id)
+	local short_id = account_id:sub(-6)
 	if not Managers.ui then return end
-	if _portrait_cache[account_id] then return end  -- already in flight or done
 	local profile = player_info:profile()
-	if not profile then return end
-	_portrait_cache[account_id] = Managers.ui:load_profile_portrait(profile, function() end)
+	-- character_id must be non-empty: portrait_ui uses it as the deduplication key
+	-- (request_id = character_id .. "_" .. size_key).  An empty character_id maps to
+	-- the shared "_medium" slot, so locking _portrait_cache to that bogus reference
+	-- would prevent a correct preload once the real character_id arrives.
+	if not profile then
+		mod:info("[SN:%s] preload_portrait: skipped — profile nil", short_id)
+		return
+	end
+	if not profile.character_id or profile.character_id == "" then
+		mod:info("[SN:%s] preload_portrait: skipped — character_id empty (profile present)", short_id)
+		return
+	end
+	local cached = _portrait_cache[account_id]
+	if cached then
+		if cached.char_id == profile.character_id then
+			return  -- correct character already in flight or done
+		end
+		-- Friend switched characters — unload the stale reference and re-preload.
+		mod:info("[SN:%s] preload_portrait: character changed (%s -> %s), reloading",
+			short_id, cached.char_id:sub(-6), profile.character_id:sub(-6))
+		Managers.ui:unload_profile_portrait(cached.load_id)
+		_portrait_cache[account_id] = nil
+	end
+	mod:info("[SN:%s] preload_portrait: starting load for character_id=%s", short_id, profile.character_id)
+	local char_id = profile.character_id
+	_portrait_cache[account_id] = {
+		load_id  = Managers.ui:load_profile_portrait(profile, function()
+			mod:info("[SN:%s] preload_portrait: load complete for character_id=%s", short_id, char_id)
+		end),
+		char_id  = char_id,
+	}
 end
 
 local function unload_portrait(account_id)
-	local load_id = _portrait_cache[account_id]
-	if load_id and Managers.ui then
-		Managers.ui:unload_profile_portrait(load_id)
+	local cached = _portrait_cache[account_id]
+	if cached and Managers.ui then
+		Managers.ui:unload_profile_portrait(cached.load_id)
 	end
 	_portrait_cache[account_id] = nil
 end
 
 local function unload_all_portraits()
 	if Managers.ui then
-		for _, load_id in pairs(_portrait_cache) do
-			Managers.ui:unload_profile_portrait(load_id)
+		for _, cached in pairs(_portrait_cache) do
+			Managers.ui:unload_profile_portrait(cached.load_id)
 		end
 	end
 	_portrait_cache = {}
@@ -288,10 +317,21 @@ local function show_notification(player_info, body, colors)
 		glow_opacity = 0,
 		show_shine   = true,
 	}
-	if profile then
+	local account_id = player_info:account_id()
+	local short_id   = account_id and account_id:sub(-6) or "???"
+	local char_id    = profile and profile.character_id or ""
+	local cached     = account_id and _portrait_cache[account_id]
+	local preloaded  = cached and cached.char_id == char_id
+	if profile and char_id ~= "" then
 		data.player              = player_info
 		data.use_player_portrait = true
+		mod:info("[SN:%s] show_notification: portrait ON — character_id=%s preloaded=%s",
+			short_id, char_id, tostring(preloaded))
+	else
+		mod:info("[SN:%s] show_notification: portrait OFF — profile=%s character_id=%q preloaded=%s",
+			short_id, tostring(profile ~= nil), char_id, tostring(preloaded))
 	end
+
 	Managers.event:trigger("event_add_notification_message", "custom", data)
 end
 

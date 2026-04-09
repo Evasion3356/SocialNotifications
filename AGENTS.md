@@ -200,6 +200,19 @@ All UI contexts that display `user_display_name()` output (who_are_you nameplate
 - `/social_test` — calls `show_notification(own_info, ...)` directly with your real `PlayerInfo`. Exercises the full real path.
 - `/social_multi_test` — fires three notifications with spoofed Steam/Xbox/PSN glyphs. Uses a Lua metatable proxy that overrides only `platform_icon()` to return the target raw glyph; all other methods delegate to the real `own_info` with the correct `self`. The DMF hook on `PlayerInfo.platform_icon` is intentionally bypassed by the proxy so `colorize_platform_icon` is tested directly.
 
+## Game logs
+
+Darktide writes console logs to:
+```
+%AppData%\Fatshark\Darktide\console_logs\
+```
+
+File name format: `console-YYYY-MM-DD-HH.MM.SS-<GUID>.log`  
+The GUID is a Crashify session identifier — it is not meaningful for mod debugging.
+
+All mod `mod:info(...)` output appears in these logs prefixed with `[MOD][SocialNotifications][INFO]`.  
+Grep for `SocialNotifications` to isolate mod output from the rest of the engine log.
+
 ## Coding guidelines
 
 - Lua 5.1 (Darktide's embedded VM). No `//` comments, no `goto`, no integer division operator.
