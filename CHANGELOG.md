@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 — 2026-04-14
+
+### Bug fixes
+- Fixed auto-invite not resending after an invite timed out. Timeout events were not handled (only explicit cancellations were), and the stale `invite_pending` party status was causing the resend to be rejected even when the correct event fired.
+- Fixed portrait flickering / wrong portrait showing after a character switch mid-session. The portrait cache now tracks character ID and automatically reloads when a different character is detected.
+- Fixed a crash (`ui_manager.lua:1990: attempt to index local 'player' (a nil value)`) introduced in game patch 1.11.4, where `event_player_profile_updated` could fire for a remote peer before the local player had spawned.
+
 ## 1.1.0 — 2026-04-07
 
 ### New features

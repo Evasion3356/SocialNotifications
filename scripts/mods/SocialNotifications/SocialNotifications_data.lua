@@ -3,7 +3,7 @@ local mod = get_mod("SocialNotifications")
 return {
 	name        = mod:localize("mod_title"),
 	description = mod:localize("mod_description"),
-	version     = "1.0.0",
+	version     = "1.2.0",
 	is_togglable = true,
 	options = {
 		widgets = {
