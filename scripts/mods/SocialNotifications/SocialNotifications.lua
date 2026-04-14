@@ -5,6 +5,7 @@ local PlayerInfo      = mod:original_require("scripts/managers/data_service/serv
 local UISettings      = mod:original_require("scripts/settings/ui/ui_settings")
 local NotifFeed       = mod:original_require("scripts/ui/constant_elements/elements/notification_feed/constant_element_notification_feed")
 local ContentList     = mod:original_require("scripts/ui/view_elements/view_element_player_social_popup/view_element_player_social_popup_content_list")
+local UIManager       = mod:original_require("scripts/managers/ui/ui_manager")
 local FriendStatus    = SocialConstants.FriendStatus
 local PartyStatus     = SocialConstants.PartyStatus
 
@@ -18,6 +19,23 @@ mod:hook(ContentList, "from_player_info", function(original, parent, player_info
 	items, count = autoinvite.inject_items(items, count, player_info)
 	items, count = allowlist.inject_items(items, count, player_info)
 	return items, count
+end)
+
+-- Workaround for a 1.11.4 game bug: event_player_profile_updated calls
+-- local_player(1):peer_id() without a nil guard, crashing when the event
+-- fires for a remote peer before the local player has spawned. We intercept,
+-- and if local_player(1) is nil we do the safe portrait update ourselves and
+-- skip the loadout-state call that would crash.
+mod:hook(UIManager, "event_player_profile_updated", function(func, self, peer_id, local_player_id, profile)
+	local player = Managers.player and Managers.player:local_player(1)
+	if not player then
+		local portraits = self._back_buffer_render_handlers and self._back_buffer_render_handlers.portraits
+		if portraits then
+			portraits:profile_updated(profile)
+		end
+		return
+	end
+	func(self, peer_id, local_player_id, profile)
 end)
 
 -- ============================================================
@@ -223,12 +241,19 @@ local function preload_portrait(player_info, account_id)
 	end
 	mod:info("[SN:%s] preload_portrait: starting load for character_id=%s", short_id, profile.character_id)
 	local char_id = profile.character_id
-	_portrait_cache[account_id] = {
-		load_id  = Managers.ui:load_profile_portrait(profile, function()
+	local entry = { load_id = nil, char_id = char_id, ready = false }
+	entry.load_id = Managers.ui:load_profile_portrait(profile, function()
+		-- Guard: only mark ready if this load is still the active one for this account.
+		-- Stale callbacks (fired after unload_all_portraits cleared the cache, or after a
+		-- character switch replaced the entry) would otherwise set ready=true on a nil/wrong
+		-- entry, causing the duplicate "load complete" log spam and incorrect ready state.
+		local current = _portrait_cache[account_id]
+		if current and current.char_id == char_id then
+			current.ready = true
 			mod:info("[SN:%s] preload_portrait: load complete for character_id=%s", short_id, char_id)
-		end),
-		char_id  = char_id,
-	}
+		end
+	end)
+	_portrait_cache[account_id] = entry
 end
 
 local function unload_portrait(account_id)
@@ -564,11 +589,22 @@ local function poll_friends()
 			for account_id, pending in pairs(_pending_online) do
 				local pi = social:get_player_info_by_account_id(account_id)
 				if pi then
-					if pi:character_name() ~= "" or now >= pending.deadline then
-						_pending_online[account_id] = nil
-						if _notify_online then
-							mod:info("[SN:%s] NOTIFY online (poll flush, char=%s)", account_id:sub(-6), tostring(pi:character_name() ~= ""))
-							show_notification(pi, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+					local char_ready = pi:character_name() ~= ""
+					local timed_out  = now >= pending.deadline
+					if char_ready or timed_out then
+						-- Ensure portrait is preloaded before flushing; if not ready yet and
+						-- deadline hasn't passed, keep deferring so the notification fires
+						-- with preloaded=true instead of triggering a cold load at display time.
+						preload_portrait(pi, account_id)
+						local cached         = _portrait_cache[account_id]
+						local portrait_ready = cached and cached.ready
+						if portrait_ready or timed_out then
+							_pending_online[account_id] = nil
+							if _notify_online then
+								mod:info("[SN:%s] NOTIFY online (poll flush, char=%s portrait=%s)",
+									account_id:sub(-6), tostring(char_ready), tostring(portrait_ready == true))
+								show_notification(pi, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+							end
 						end
 					end
 				end
@@ -604,16 +640,36 @@ mod._on_immaterium_entry = function(self, new_entry)
 	-- Only flush when the HUD is available (_in_gameplay); otherwise keep deferring.
 	local is_friend = player_info:is_friend()
 
+	-- Kick off portrait preload as early as possible — before the flush check — so
+	-- that by the time we're ready to show the notification the portrait is already
+	-- in the render-target atlas.  This is the fix for the cold-load hitch: on the
+	-- first-online path the initial preload_portrait call was skipped (profile nil),
+	-- so _portrait_cache was empty when the deferred flush fired.
+	if is_friend then
+		local state = _friend_states[account_id]
+		if state and state.online then
+			preload_portrait(player_info, account_id)
+		end
+	end
+
 	local pending = _pending_online[account_id]
 	if pending and _in_gameplay and is_friend then
 		local char_name = player_info:character_name()
 		local now = Managers.time and Managers.time:time("main") or 0
-		if char_name ~= "" or now >= pending.deadline then
-			_pending_online[account_id] = nil
-			if _notify_online then
-				mod:info("[SN:%s] NOTIFY online (deferred flush, char=%s deadline=%s)",
-					account_id:sub(-6), tostring(char_name ~= ""), tostring(now >= pending.deadline))
-				show_notification(player_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+		local timed_out = now >= pending.deadline
+		if char_name ~= "" or timed_out then
+			-- Only flush once the portrait is ready; if it isn't yet and the deadline
+			-- hasn't passed, keep deferring.  The next immaterium event (typically
+			-- within ~500ms, the portrait load time) will flush with preloaded=true.
+			local cached         = _portrait_cache[account_id]
+			local portrait_ready = cached and cached.ready
+			if portrait_ready or timed_out then
+				_pending_online[account_id] = nil
+				if _notify_online then
+					mod:info("[SN:%s] NOTIFY online (deferred flush, char=%s portrait=%s deadline=%s)",
+						account_id:sub(-6), tostring(char_name ~= ""), tostring(portrait_ready == true), tostring(timed_out))
+					show_notification(player_info, mod:localize("notif_online_body"), NOTIF_COLORS.online)
+				end
 			end
 		end
 	end

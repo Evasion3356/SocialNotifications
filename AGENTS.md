@@ -15,7 +15,6 @@ SocialNotifications/
 ├── GOAL.md                                ← design goals, API details, open work
 ├── SocialNotifications.mod                ← DMF entry point (loaded by the game)
 ├── notification_allowlist.lua             ← persisted allowlist data (written at runtime)
-├── Darktide-Source-Code/                  ← game source reference — READ ONLY, never modify
 └── scripts/mods/SocialNotifications/
     ├── SocialNotifications.lua            ← main mod (poll loop, event handler, reset)
     ├── SocialNotifications_autoinvite.lua ← auto-invite loop + social popup hook
@@ -92,7 +91,7 @@ Only available after `on_all_mods_loaded`.
 | `party_status()` | string | `"none"` `"mine"` `"same_mission"` `"other"` `"invite_pending"` |
 | `num_party_members()` | int | Their current party size. |
 
-Full activity list in `Darktide-Source-Code/scripts/settings/presence/presence_settings.lua`.
+Full activity list in `D:\Backup\Stuff\Darktide-Source-Code\scripts\settings\presence\presence_settings.lua`.
 
 ### Presence manager — `Managers.presence`
 Lower-level than SocialService. `Managers.presence:get_presence(account_id)` → `PresenceEntryImmaterium` with `activity_id()`, `is_online()`, `character_profile()`, etc.
@@ -219,4 +218,4 @@ Grep for `SocialNotifications` to isolate mod output from the rest of the engine
 - Do not `require` game modules directly — use `mod:original_require(path)`.
 - Paths passed to DMF APIs use forward slashes and are rooted at the `mods/` directory.
 - Keep all user-visible strings in `SocialNotifications_localization.lua`; access via `mod:localize("key")`.
-- Never read or write `Darktide-Source-Code/`; it exists only as a reference.
+- The game source reference lives at `D:\Backup\Stuff\Darktide-Source-Code` — READ ONLY, never modify.
